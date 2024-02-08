@@ -420,7 +420,10 @@ def get_extensions():
             "--ptxas-options=-O2",
             "--ptxas-options=-allow-expensive-optimizations=true",
         ]
-    elif torch.cuda.is_available() and torch.version.hip:
+    elif torch.cuda.is_available() and torch.version.hip
+        or os.getenv("FORCE_ROCM", "0") == "1"
+        or os.getenv("PYTORCH_ROCM_ARCH", "") != "":
+
         rename_cpp_cu(source_hip)
         source_hip_cu = []
         for ff in source_hip:
@@ -437,6 +440,9 @@ def get_extensions():
         ]
 
         generator_flag = []
+        arch_flag = []
+        for arch in os.getenv("PYTORCH_ROCM_ARCH", "native").split(';'):
+            arch_flag.append("--offload-arch=" + arch)
 
         cc_flag = ["-DBUILD_PYTHON_PACKAGE"]
         extra_compile_args = {
@@ -444,12 +450,12 @@ def get_extensions():
             "nvcc": [
                 "-O3",
                 "-std=c++17",
-                f"--offload-arch={os.getenv('HIP_ARCHITECTURES', 'native')}",
                 "-U__CUDA_NO_HALF_OPERATORS__",
                 "-U__CUDA_NO_HALF_CONVERSIONS__",
                 "-DCK_FMHA_FWD_FAST_EXP2=1",
                 "-fgpu-flush-denormals-to-zero",
             ]
+            + arch_flag
             + generator_flag
             + cc_flag,
         }
