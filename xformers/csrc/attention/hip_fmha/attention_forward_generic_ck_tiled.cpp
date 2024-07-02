@@ -24,20 +24,20 @@
 extern void batched_forward_fp16(
     BatchedForwardParams& param,
     hipStream_t stream);
-extern void batched_forward_bp16(
+extern void batched_forward_bf16(
     BatchedForwardParams& param,
     hipStream_t stream);
 extern void grouped_forward_fp16(
     GroupedForwardParams& param,
     hipStream_t stream);
-extern void grouped_forward_bp16(
+extern void grouped_forward_bf16(
     GroupedForwardParams& param,
     hipStream_t stream);
 
 extern void batched_infer_fp16(BatchedForwardParams& param, hipStream_t stream);
-extern void batched_infer_bp16(BatchedForwardParams& param, hipStream_t stream);
+extern void batched_infer_bf16(BatchedForwardParams& param, hipStream_t stream);
 extern void grouped_infer_fp16(GroupedForwardParams& param, hipStream_t stream);
-extern void grouped_infer_bp16(GroupedForwardParams& param, hipStream_t stream);
+extern void grouped_infer_bf16(GroupedForwardParams& param, hipStream_t stream);
 
 namespace {
 
@@ -95,6 +95,8 @@ efficient_attention_forward_ck(
     TORCH_CHECK(seqstart_q->size(0) == seqstart_k->size(0));
     TORCH_CHECK(query.size(0) == 1, "cu_seqlen only supports batch_size=1");
     TORCH_CHECK(max_seqlen_q_.has_value());
+    CHECK_NOSPARSE_CONTIGUOUS_CUDA((*seqstart_q));
+    CHECK_NOSPARSE_CONTIGUOUS_CUDA((*seqstart_k));
   };
 
   // last dim is contiguous, device is kCUDA
@@ -124,7 +126,6 @@ efficient_attention_forward_ck(
   int64_t philox_offset;
 
   if (use_dropout) {
-    /*
     at::PhiloxCudaState rng_engine_inputs;
     at::CUDAGeneratorImpl* gen =
         at::get_generator_or_default<at::CUDAGeneratorImpl>(
@@ -133,15 +134,13 @@ efficient_attention_forward_ck(
     std::lock_guard<std::mutex> lock(gen->mutex_);
     // if using dropout, we produce 1 random number for each element of the
     // attention tensor
-    rng_engine_inputs = gen->philox_cuda_state(B * Hq * M * N);
+    rng_engine_inputs =
+        gen->philox_cuda_state((B + 3) * (Hq + 1) * (M + 1) * (N + 1));
 
     const auto seeds = at::cuda::philox::unpack(rng_engine_inputs);
 
     philox_seed = std::get<0>(seeds);
     philox_offset = std::get<1>(seeds);
-    */
-    throw std::runtime_error(
-        "drop-out is currently not implemented by ck-tiled!");
   }
 
   auto set_batched_forward_params = [&](BatchedForwardParams& p) {
@@ -205,24 +204,27 @@ efficient_attention_forward_ck(
     p.window_size =
         window_size.has_value() ? (*window_size > 0 ? *window_size : 0) : 0;
 
-    p.use_dropout = use_dropout;
     p.philox_seed = philox_seed;
     p.philox_offset = philox_offset;
     p.compute_logsumexp = compute_logsumexp;
 
     // the following parameters are only used by training forward
-    if (p.use_dropout) {
-      // p.dropout_prob = static_cast<float>(dropout_p);
-      throw std::runtime_error(
-          "drop-out is currently not implemented by ck-tiled!");
+    if (use_dropout) {
+      p.dropout_prob = static_cast<float>(dropout_p);
     } else
       p.dropout_prob = 0.0f;
 
     if (p.compute_logsumexp) {
       logsumexp = at::empty({B, Hq, M}, opts.dtype(at::kFloat));
       p.logsumexp_ptr = logsumexp.data_ptr();
-    } else
+      p.lse_strides = {
+          static_cast<int>(logsumexp.stride(0)),
+          static_cast<int>(logsumexp.stride(1)),
+          static_cast<int>(logsumexp.stride(2))};
+    } else {
       p.logsumexp_ptr = nullptr;
+      p.lse_strides = {0, 0, 0};
+    }
   };
 
   auto set_grouped_forward_params = [&](GroupedForwardParams& p) {
@@ -233,6 +235,8 @@ efficient_attention_forward_ck(
     p.Hkv = Hkv;
     p.K = K;
     p.Kv = Kv;
+
+    p.max_seqlen_q = *max_seqlen_q_;
 
     if (scale.has_value()) {
       p.scale = float(*scale);
@@ -282,79 +286,49 @@ efficient_attention_forward_ck(
     p.window_size =
         window_size.has_value() ? (*window_size > 0 ? *window_size : 0) : 0;
 
-    // max_seqlen_q is used to create logsumexp tensor
-    p.max_seqlen_q = *max_seqlen_q_;
-
     // interesting: the tensors have to be defined here, moving to more local
     // scope will cause issue
     at::Tensor dev_seqstart_q;
     at::Tensor dev_seqstart_k;
     at::Tensor dev_seqlen_k;
 
-    if (seqstart_q->is_cpu()) {
-      dev_seqstart_q = at::empty({p.num_batches + 1}, opts.dtype(at::kInt));
-      p.seqstart_q_dev_ptr = dev_seqstart_q.data_ptr();
-      HIP_CALL_CHECK(hipMemcpyAsync(
-          p.seqstart_q_dev_ptr,
-          seqstart_q->data_ptr(),
-          (p.num_batches + 1) * sizeof(int),
-          hipMemcpyHostToDevice,
-          stream));
-    } else
-      p.seqstart_q_dev_ptr = seqstart_q->data_ptr();
-
-    if (seqstart_k->is_cpu()) {
-      dev_seqstart_k = at::empty({p.num_batches + 1}, opts.dtype(at::kInt));
-
-      p.seqstart_k_dev_ptr = dev_seqstart_k.data_ptr();
-      HIP_CALL_CHECK(hipMemcpyAsync(
-          p.seqstart_k_dev_ptr,
-          seqstart_k->data_ptr(),
-          (p.num_batches + 1) * sizeof(int),
-          hipMemcpyHostToDevice,
-          stream));
-    } else
-      p.seqstart_k_dev_ptr = seqstart_k->data_ptr();
+    p.seqstart_q_dev_ptr = seqstart_q->data_ptr();
+    p.seqstart_k_dev_ptr = seqstart_k->data_ptr();
 
     if (seqlen_k.has_value()) {
       TORCH_CHECK(seqlen_k->scalar_type() == at::ScalarType::Int);
       TORCH_CHECK(seqlen_k->dim() == 1);
       TORCH_CHECK(seqlen_k->size(0) == p.num_batches)
+      CHECK_NOSPARSE_CONTIGUOUS_CUDA((*seqlen_k));
 
-      if (seqlen_k->is_cpu()) {
-        dev_seqlen_k = at::empty({p.num_batches}, opts.dtype(at::kInt));
-
-        p.seqlen_k_dev_ptr = dev_seqlen_k.data_ptr();
-        HIP_CALL_CHECK(hipMemcpyAsync(
-            p.seqlen_k_dev_ptr,
-            seqlen_k->data_ptr(),
-            p.num_batches * sizeof(int),
-            hipMemcpyHostToDevice,
-            stream));
-      } else
-        p.seqlen_k_dev_ptr = seqlen_k->data_ptr();
+      p.seqlen_k_dev_ptr = seqlen_k->data_ptr();
     } else
       p.seqlen_k_dev_ptr = nullptr;
 
-    p.use_dropout = use_dropout;
     p.philox_seed = philox_seed;
     p.philox_offset = philox_offset;
     p.compute_logsumexp = compute_logsumexp;
 
     // the following parameters are only used by training forward
-    if (p.use_dropout) {
-      // p.dropout_prob = static_cast<float>(dropout_p);
-      throw std::runtime_error(
-          "drop-out is currently not implemented by ck-tiled!");
+    if (use_dropout) {
+      p.dropout_prob = static_cast<float>(dropout_p);
     } else
       p.dropout_prob = 0.0f;
 
     if (p.compute_logsumexp) {
+      // align the access of logsumexp by each thread-group in cache-line size
+      int aligned_seqlen_q = (p.max_seqlen_q + 15) / 16 * 16;
       logsumexp = at::empty(
-          {p.num_batches, Hq, p.max_seqlen_q}, opts.dtype(at::kFloat));
+          {p.num_batches, Hq, aligned_seqlen_q}, opts.dtype(at::kFloat));
       p.logsumexp_ptr = logsumexp.data_ptr();
-    } else
+      p.lse_strides = {
+          static_cast<int>(logsumexp.stride(0)),
+          static_cast<int>(logsumexp.stride(1)),
+          static_cast<int>(logsumexp.stride(2))};
+    } else {
       p.logsumexp_ptr = nullptr;
+      p.lse_strides = {0, 0, 0};
+    }
   };
 
   auto inDataType = query.scalar_type();
@@ -364,48 +338,40 @@ efficient_attention_forward_ck(
 
     set_batched_forward_params(batched_forward_params);
 
-    if (!batched_forward_params.use_dropout &&
-        !batched_forward_params.compute_logsumexp) {
+    if (!batched_forward_params.compute_logsumexp) {
       if (inDataType == at::ScalarType::Half) {
         batched_infer_fp16(batched_forward_params, stream);
       } else if (inDataType == at::ScalarType::BFloat16) {
-        batched_infer_bp16(batched_forward_params, stream);
+        batched_infer_bf16(batched_forward_params, stream);
       } else
         throw std::runtime_error("input data-type is not supported!");
     } else {
       if (inDataType == at::ScalarType::Half) {
         batched_forward_fp16(batched_forward_params, stream);
       } else if (inDataType == at::ScalarType::BFloat16) {
-        batched_forward_bp16(batched_forward_params, stream);
+        batched_forward_bf16(batched_forward_params, stream);
       } else
         throw std::runtime_error("input data-type is not supported!");
-
-      throw std::runtime_error(
-          "drop-out and compuate logsumexp currently not implemented by ck-tiled!");
     };
   } else { // input is grouped
     GroupedForwardParams grouped_forward_params;
 
     set_grouped_forward_params(grouped_forward_params);
 
-    if (!grouped_forward_params.use_dropout &&
-        !grouped_forward_params.compute_logsumexp) {
+    if (!grouped_forward_params.compute_logsumexp) {
       if (inDataType == at::ScalarType::Half) {
         grouped_infer_fp16(grouped_forward_params, stream);
       } else if (inDataType == at::ScalarType::BFloat16) {
-        grouped_infer_bp16(grouped_forward_params, stream);
+        grouped_infer_bf16(grouped_forward_params, stream);
       } else
         throw std::runtime_error("input data-type is not supported!");
     } else {
       if (inDataType == at::ScalarType::Half) {
         grouped_forward_fp16(grouped_forward_params, stream);
       } else if (inDataType == at::ScalarType::BFloat16) {
-        grouped_forward_bp16(grouped_forward_params, stream);
+        grouped_forward_bf16(grouped_forward_params, stream);
       } else
         throw std::runtime_error("input data-type is not supported!");
-
-      throw std::runtime_error(
-          "drop-out and compuate logsumexp currently not implemented by ck-tiled!");
     };
   };
 

@@ -127,16 +127,24 @@ def _is_cutlassB_faster_than_flash(inp: Inputs) -> bool:
     return False
 
 
-def _dispatch_bw(inp: Inputs) -> Type[AttentionBwOpBase]:
-    priority_list_ops: List[Type[AttentionBwOpBase]] = [
-        flash.BwOp,
-        cutlass.BwOp,
-        # CUDA illegal memory issues, race conditions etc..
-        # triton.BwOp,
-        # Deprecated
-        small_k.BwOp,
-    ]
-    if _is_cutlassB_faster_than_flash(inp):
+def _dispatch_bw(inp: Inputs, is_unpadded_lse: bool = False) -> Type[AttentionBwOpBase]:
+    if torch.version.cuda:
+        priority_list_ops: List[Type[AttentionBwOpBase]] = [
+            flash.BwOp,
+            cutlass.BwOp,
+            # CUDA illegal memory issues, race conditions etc..
+            # triton.BwOp,
+            # Deprecated
+            small_k.BwOp,
+        ]
+    else:
+        priority_list_ops = [
+            ck.BwOp,
+        ]
+
+    if is_unpadded_lse:
+        priority_list_ops = [op for op in priority_list_ops if op.SUPPORTS_UNPADDED_LSE]
+    if torch.version.cuda and _is_cutlassB_faster_than_flash(inp):
         priority_list_ops.remove(cutlass.BwOp)
         priority_list_ops.insert(0, cutlass.BwOp)
     return _run_priority_list(

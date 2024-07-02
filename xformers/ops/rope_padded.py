@@ -22,6 +22,7 @@ def rope_padded(
     attn_bias: BlockDiagonalCausalWithOffsetPaddedKeysMask,
     *,
     theta: float = 10000.0,
+    linear_scale: float = 1.0,
     out_q: Optional[torch.Tensor] = None,
     first_seqpos: Optional[torch.Tensor] = None,
     seqpos: Optional[torch.Tensor] = None,
@@ -76,6 +77,9 @@ def rope_padded(
                    https://github.com/huggingface/transformers/blob/
                    f143037789288ba532dada934a118e648e715738/
                    src/transformers/models/llama/modeling_llama.py#L126-L130
+        linear_scale: A scaling factor to apply to the sequence ids when computing
+                      the RoPE frequencies.  When set to K, all sequence indices
+                      are divided by K.
         internal_dtype: set to "f32" or "f64" to enforce dtype in the calculation
     """
     if torch.is_grad_enabled() and (
@@ -215,12 +219,15 @@ def rope_padded(
     # heuristics for number of warps
     num_warps = min(max(BLOCK_SIZE // 256, 1), 8)
     device = xq.device
-    # Move these to the right device, like fmha does.
-    attn_bias.k_seqinfo.to(device)
-    attn_bias.q_seqinfo.to(device)
     seqstartq = attn_bias.q_seqinfo.seqstart
     seqstartk = attn_bias.k_seqinfo.seqstart
     seqlenk = attn_bias.k_seqinfo.seqlen
+    if (
+        seqstartq.device != device
+        or seqstartk.device != device
+        or seqlenk.device != device
+    ):
+        raise ValueError("`attn_bias` must be on the same device as the other inputs")
     assert internal_dtype in ["", "f32", "f64"]
     # experiment with the order of dims here.
     with torch.cuda.device(xq.device):
@@ -237,6 +244,7 @@ def rope_padded(
             seqstartk,
             seqlenk,
             theta,
+            linear_scale,
             first_seqpos,
             seqpos,
             k_start,

@@ -996,3 +996,17 @@ def test_sp24_ste():
     spX = sp24.sparsify24(x, gradient=sp24.GRADIENT_STE)
     spX.backward(grad)
     assert_allclose(x.grad, grad, "grad")
+
+
+@requires_sp24_gemm
+@parametrize_dtype
+def test_sparsify24_ste(dtype):
+    x = torch.randn([512, 512], dtype=dtype, device="cuda", requires_grad=True)
+    y = torch.randn([512, 512], dtype=dtype, device="cuda", requires_grad=True)
+    mul0 = 2.0  # (numbers that have an exact representation in f16)
+    mul1 = 0.5
+    spX = sp24.sparsify24_ste(x, bw_mul0=mul0, bw_mul1=mul1)
+    spX.backward(y)
+    spYd = sp24.sparsify24_like(y, pattern=spX)._sp24_to_dense()
+    ref = mul1 * (spYd) + mul0 * (y - spYd)
+    assert_allclose(x.grad, ref, "grad")

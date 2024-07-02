@@ -7,26 +7,10 @@ from typing import Any, List, Optional, Sequence, Tuple, Type, Union, cast
 
 import torch
 
-from . import (
-    attn_bias,
-    ck,
-    ck_decoder,
-    ck_splitk,
-    cutlass,
-    decoder,
-    flash,
-    small_k,
-    triton_splitk,
-)
-from .attn_bias import (
-    AttentionBias,
-    BlockDiagonalGappyKeysMask,
-    BlockDiagonalMask,
-    BlockDiagonalPaddedKeysMask,
-    LowerTriangularFromBottomRightMask,
-    LowerTriangularMask,
-    PagedBlockDiagonalPaddedKeysMask,
-)
+from . import attn_bias
+from . import attn_bias as _attn_bias
+from . import ck, ck_decoder, ck_splitk, cutlass, decoder, flash, small_k, triton_splitk
+from .attn_bias import AttentionBias, BlockDiagonalMask, LowerTriangularMask
 from .common import (
     AttentionBwOpBase,
     AttentionFwOpBase,
@@ -56,13 +40,36 @@ def _deserialize_bias(attn_bias_ctx, attn_bias_tensor: Optional[torch.Tensor]) -
     return attn_bias_tensor
 
 
+# Note: `torch.compile` only allows custom autograd functions
+# to accept a subset of types. Therefore we serialize `op` objects
+# to `str` before entering the function, and unserialize them inside.
+# See also: https://github.com/pytorch/pytorch/issues/118395
+_OPS_LOOKUP = {
+    flash.FwOp.NAME: flash.FwOp,
+    flash.BwOp.NAME: flash.BwOp,
+}
+
+
+def _serialize_op(op):
+    if op is not None and op.NAME in _OPS_LOOKUP:
+        return op.NAME
+    return op
+
+
+def _unserialize_op(op):
+    if isinstance(op, str):
+        return _OPS_LOOKUP[op]
+    return op
+
+
 class _fMHA(torch.autograd.Function):
     @staticmethod
     # type: ignore
-    def forward(ctx, op: AttentionOp, *args: Any) -> Any:
+    def forward(ctx, op_fw, op_bw, *args: Any) -> Any:
         inp = Inputs(*args)
-        op_fw = op[0] if op is not None else None
-        op_bw = op[1] if op is not None else None
+
+        op_fw = _unserialize_op(op_fw)
+        op_bw = _unserialize_op(op_bw)
 
         out, op_ctx = _memory_efficient_attention_forward_requires_grad(
             inp=inp, op=op_fw
@@ -96,10 +103,11 @@ class _fMHA(torch.autograd.Function):
         if op_bw is None and (
             inp.query.requires_grad or inp.key.requires_grad or inp.value.requires_grad
         ):
+            is_valid_unpadded_lse = _valid_unpadded_lse_shape(op_ctx.lse, inp)
             # NOTE: We need to check tensor strides to decide which operator we run in the BW pass.
             # Unfortunately, PyTorch only allows to call this function during the FW pass, so
             # we decide the operator to use now.
-            op_bw = _dispatch_bw(inp)
+            op_bw = _dispatch_bw(inp, is_valid_unpadded_lse)
         ctx.op_fw = op_fw
         ctx.op_bw = op_bw
         ctx.p = inp.p
@@ -119,11 +127,11 @@ class _fMHA(torch.autograd.Function):
         ctx.scale = inp.scale
         ctx.attn_bias_ctx = attn_bias_ctx
         ctx.n_args = len(args)
-        return out
+        return out, op_ctx.lse
 
     @staticmethod
     @torch.autograd.function.once_differentiable
-    def backward(ctx, grad):
+    def backward(ctx, grad, grad_lse):
         # Re-create context
         query, key, value, out, lse = ctx.saved_tensors
         attn_bias_tensor = ctx.attn_bias_tensor
@@ -148,7 +156,7 @@ class _fMHA(torch.autograd.Function):
             op=ctx.op_bw,
             _skip_op_checks=True,
         )
-        return (None, grads.dq, grads.dk, grads.dv, grads.db) + (None,) * (
+        return (None, None, grads.dq, grads.dk, grads.dv, grads.db) + (None,) * (
             ctx.n_args - 2
         )
 
@@ -389,9 +397,12 @@ def _memory_efficient_attention(
         )
 
     output_shape = inp.normalize_bmhk()
+
+    op_fw = _serialize_op(op[0] if op is not None else None)
+    op_bw = _serialize_op(op[1] if op is not None else None)
     return _fMHA.apply(
-        op, inp.query, inp.key, inp.value, inp.attn_bias, inp.p, inp.scale
-    ).reshape(output_shape)
+        op_fw, op_bw, inp.query, inp.key, inp.value, inp.attn_bias, inp.p, inp.scale
+    )[0].reshape(output_shape)
 
 
 def _memory_efficient_attention_forward(
@@ -422,6 +433,49 @@ def _memory_efficient_attention_forward_requires_grad(
     return (out[0].reshape(output_shape), out[1])
 
 
+def _valid_padded_lse_shape(lse, inp):
+    invalid_shape = (
+        lse.ndim != 3
+        # Dim 0
+        or (
+            not isinstance(inp.attn_bias, BlockDiagonalMask)
+            and lse.shape[0] != inp.query.shape[0]
+        )
+        or (
+            isinstance(inp.attn_bias, BlockDiagonalMask)
+            and lse.shape[0] != inp.attn_bias.q_seqinfo.seqstart.shape[0] - 1
+        )
+        # Dim 1
+        or lse.shape[1] != inp.query.shape[2]
+        # Dim 2
+        or (
+            not isinstance(inp.attn_bias, BlockDiagonalMask)
+            and lse.shape[2] < inp.query.shape[1]
+        )
+    )
+    return not invalid_shape
+
+
+def _valid_unpadded_lse_shape(lse, inp):
+    return (
+        inp.query.ndim == 4
+        and lse.ndim == 2
+        # Dim 0
+        and lse.shape[0] == inp.query.shape[2]
+        # Dim 1
+        and lse.shape[1] == inp.attn_bias.q_seqinfo.seqstart_py[-1]
+        and isinstance(
+            inp.attn_bias,
+            (
+                _attn_bias.BlockDiagonalMask,
+                _attn_bias.BlockDiagonalGappyKeysMask,
+                _attn_bias.PagedBlockDiagonalPaddedKeysMask,
+                _attn_bias.BlockDiagonalPaddedKeysMask,
+            ),
+        )
+    )
+
+
 def _memory_efficient_attention_backward(
     ctx: Context,
     inp: Inputs,
@@ -443,26 +497,13 @@ def _memory_efficient_attention_backward(
         x.shape for x in (inp.query, inp.key, inp.value)
     )
     inp.normalize_bmhk()
-    # LSE has shape [B, H, M] while query has shape [B, M, H, K]
-    if (
-        ctx.lse.ndim != 3
-        # Dim 0
-        or (
-            not isinstance(inp.attn_bias, BlockDiagonalMask)
-            and ctx.lse.shape[0] != inp.query.shape[0]
-        )
-        or (
-            isinstance(inp.attn_bias, BlockDiagonalMask)
-            and ctx.lse.shape[0] != inp.attn_bias.q_seqinfo.seqstart.shape[0] - 1
-        )
-        # Dim 1
-        or ctx.lse.shape[1] != inp.query.shape[2]
-        # Dim 2
-        or (
-            not isinstance(inp.attn_bias, BlockDiagonalMask)
-            and ctx.lse.shape[2] < inp.query.shape[1]
-        )
-    ):
+    # LSE has shape [B, H, M] or [H, total_q_len], while query has shape [B, M, H, K] or [1, total_q_len, H, K]
+    support_unpadded_lse = op is None or op.SUPPORTS_UNPADDED_LSE
+    is_valid_unpadded_lse = support_unpadded_lse and _valid_unpadded_lse_shape(
+        ctx.lse, inp
+    )
+    is_valid_padded_lse = _valid_padded_lse_shape(ctx.lse, inp)
+    if not (is_valid_padded_lse or is_valid_unpadded_lse):
         raise ValueError(
             "Input tensors have incompatible shapes."
             f"lse.shape    : {ctx.lse.shape} \n"
@@ -472,7 +513,7 @@ def _memory_efficient_attention_backward(
     ctx.out = bmk2bmhk(ctx.out, 1)
 
     if op is None:
-        op = _dispatch_bw(inp)
+        op = _dispatch_bw(inp, is_valid_unpadded_lse)
     elif not _skip_op_checks:
         _ensure_op_supports_or_raise(
             ValueError, "memory_efficient_attention_backward", op, inp
@@ -493,50 +534,91 @@ def memory_efficient_attention_partial(
     p: float = 0.0,
     scale: Optional[float] = None,
     *,
-    op: Optional[Type[AttentionFwOpBase]] = None,
+    op: Optional[Union[AttentionOp, Type[AttentionFwOpBase]]] = None,
     output_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Returns a tuple (output, lse), where `output` is the attention and  `lse`
-    is a least squared error. The cat'ed outputs of calls to this with the same query
-    and separate keys and values can be merged with merge_attentions to obtain
-    the attention of the queries against the disjoint union of the keys and values.
+    Returns a tuple (output, lse), where `output` is the attention in the style of
+    memory_efficient_attention, and  `lse` is extra data, a log-sum-exp.
+    The outputs of calls to this with the same query and separate keys and values
+    can be merged with merge_attentions to obtain the attention of the queries
+    against the disjoint union of the keys and values.
+
+    Warning: The backward pass of this function is quite restricted. In particular
+    we assume that in the forward pass the outputs were only used in merge_attention
+    calculations, and that LSEs weren't used anywhere except in merge attentions.
     """
     if p != 0.0:
         raise NotImplementedError("dropout is not supported.")
-    if not isinstance(
-        attn_bias,
-        (
-            type(None),
-            BlockDiagonalGappyKeysMask,
-            BlockDiagonalPaddedKeysMask,
-            PagedBlockDiagonalPaddedKeysMask,
-            LowerTriangularFromBottomRightMask,
-            LowerTriangularMask,
-        ),
+    fwop: Optional[Type[AttentionFwOpBase]] = op[0] if isinstance(op, tuple) else op
+    if not (
+        isinstance(
+            attn_bias,
+            (
+                type(None),
+                _attn_bias.BlockDiagonalGappyKeysMask,
+                _attn_bias.BlockDiagonalPaddedKeysMask,
+                _attn_bias.PagedBlockDiagonalGappyKeysMask,
+                _attn_bias.PagedBlockDiagonalPaddedKeysMask,
+                _attn_bias.LowerTriangularFromBottomRightMask,
+                _attn_bias.LowerTriangularMask,
+            ),
+        )
+        or fwop is None
+        or fwop.UNPADDED_LSE
     ):
         raise ValueError(
             f"{type(attn_bias)} is not supported in memory_efficient_attention_partial."
         )
-    out, ctx = _memory_efficient_attention_forward_requires_grad(
-        Inputs(
-            query=query,
-            key=key,
-            value=value,
-            p=p,
-            attn_bias=attn_bias,
-            scale=scale,
-            output_dtype=output_dtype,
-            is_partial=True,
-        ),
-        op=op,
+    inp = Inputs(
+        query=query,
+        key=key,
+        value=value,
+        p=p,
+        attn_bias=attn_bias,
+        scale=scale,
+        output_dtype=output_dtype,
+        is_partial=True,
     )
-    return out, ctx.lse
+
+    is_grad = torch.is_grad_enabled() and any(
+        x.requires_grad for x in [query, key, value]
+    )
+
+    if not is_grad:
+        out, ctx = _memory_efficient_attention_forward_requires_grad(
+            inp,
+            op=fwop,
+        )
+        return out, ctx.lse
+
+    if query.ndim == 5:
+        raise ValueError("gradients not supported for 5D tensors")
+    if isinstance(op, tuple):
+        op_fw = _serialize_op(op[0])
+        op_bw = _serialize_op(op[1])
+    elif op is None:
+        op_fw = op_bw = None
+    else:
+        op_fw = _serialize_op(op)
+        op_bw = None
+    return _fMHA.apply(
+        op_fw,
+        op_bw,
+        inp.query,
+        inp.key,
+        inp.value,
+        inp.attn_bias,
+        inp.p,
+        inp.scale,
+        inp.output_dtype,
+        inp.is_partial,
+    )
 
 
 def merge_attentions(
-    attn_split: Union[torch.Tensor, List[torch.Tensor]],
-    lse_split: Union[torch.Tensor, List[torch.Tensor]],
+    attn_split: Union[torch.Tensor, Sequence[torch.Tensor]],
+    lse_split: Union[torch.Tensor, Sequence[torch.Tensor]],
     write_lse: bool = True,
     output_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -734,14 +816,14 @@ class _MergeAttentions(torch.autograd.Function):
         return tuple(ret)
 
 
-ALL_FW_OPS: Sequence[Type[AttentionFwOpBase]] = [
+ALL_FW_OPS: List[Type[AttentionFwOpBase]] = [
     cutlass.FwOp if torch.version.cuda else ck.FwOp,
     flash.FwOp,
     small_k.FwOp,
     triton_splitk.FwOp,
 ]
 
-ALL_BW_OPS: Sequence[Type[AttentionBwOpBase]] = [
+ALL_BW_OPS: List[Type[AttentionBwOpBase]] = [
     cutlass.BwOp if torch.version.cuda else ck.BwOp,
     flash.BwOp,
     small_k.BwOp,

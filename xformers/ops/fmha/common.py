@@ -25,9 +25,13 @@ from ..._cpp_lib import _built_with_cuda
 from ..common import BaseOperator
 from .attn_bias import (
     AttentionBias,
+    AttentionBiasSubTensor,
+    BlockDiagonalGappyKeysMask,
     BlockDiagonalMask,
+    BlockDiagonalPaddedKeysMask,
     LowerTriangularMask,
-    LowerTriangularMaskWithTensorBias,
+    PagedBlockDiagonalGappyKeysMask,
+    PagedBlockDiagonalPaddedKeysMask,
 )
 
 
@@ -44,10 +48,8 @@ def _attn_bias_apply(
     attn_bias: Optional[Union[torch.Tensor, AttentionBias]],
     op: Callable[[torch.Tensor], torch.Tensor],
 ) -> Optional[Union[torch.Tensor, AttentionBias]]:
-    if isinstance(attn_bias, torch.Tensor):
+    if isinstance(attn_bias, torch.Tensor) and attn_bias.ndim != 0:
         return op(attn_bias)
-    if isinstance(attn_bias, LowerTriangularMaskWithTensorBias):
-        return LowerTriangularMaskWithTensorBias(op(attn_bias._bias))
     return attn_bias
 
 
@@ -128,6 +130,24 @@ class Inputs:
             )
         if any(x.device != self.query.device for x in qkv):
             raise ValueError("Query/Key/Value should all be on the same device")
+        if isinstance(
+            self.attn_bias,
+            (
+                BlockDiagonalMask,
+                BlockDiagonalPaddedKeysMask,
+                PagedBlockDiagonalPaddedKeysMask,
+                BlockDiagonalGappyKeysMask,
+                PagedBlockDiagonalGappyKeysMask,
+            ),
+        ):
+            bias_device = self.attn_bias.q_seqinfo.seqstart.device
+            if bias_device != self.query.device:
+                raise ValueError(
+                    f"Attention bias and Query/Key/Value should be on the same device\n"
+                    f"  query.device: {self.query.device}\n"
+                    f"  attn_bias   : {bias_device}\n"
+                )
+
         quantized_dtypes = self.key.dtype == self.value.dtype == torch.int32
         non_quantized_dtypes = all(x.dtype == self.query.dtype for x in qkv)
         if not (quantized_dtypes or non_quantized_dtypes):
@@ -149,10 +169,11 @@ class Inputs:
                 f"than BMK when using bias type `{type(self.attn_bias).__name__}`"
             )
         attn_bias_t: Optional[torch.Tensor] = None
-        if isinstance(self.attn_bias, torch.Tensor):
+        if isinstance(self.attn_bias, AttentionBiasSubTensor):
+            if self.attn_bias.HOLDS_DENSE_TENSOR:
+                attn_bias_t = self.attn_bias._subtensor
+        elif isinstance(self.attn_bias, torch.Tensor):
             attn_bias_t = self.attn_bias
-        if isinstance(self.attn_bias, LowerTriangularMaskWithTensorBias):
-            attn_bias_t = self.attn_bias._bias
         if self.query.ndim == 4 and attn_bias_t is not None:
             expected_shape = (
                 self.query.shape[0],
@@ -382,6 +403,7 @@ class AttentionFwOpBase(AttentionOpBase):
         torch.half: 4e-4,
         torch.bfloat16: 5e-3,
     }
+    UNPADDED_LSE: bool = False
 
     @classmethod
     def apply(
@@ -450,6 +472,8 @@ class AttentionBwOpBase(AttentionOpBase):
         torch.bfloat16: 0.1,
     }
     SUPPORTS_ATTN_BIAS_GRAD = False
+    SUPPORTS_PARTIAL = True
+    SUPPORTS_UNPADDED_LSE = False
 
     @classmethod
     def not_supported_reasons(cls, d: Inputs) -> List[str]:

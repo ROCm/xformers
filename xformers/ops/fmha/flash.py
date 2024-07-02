@@ -37,8 +37,12 @@ from .common import (
     Inputs,
     check_lastdim_alignment_stride1,
 )
+from .torch_attention_compat import is_pt_flash_compatible
 
 FLASH_VERSION = "0.0.0"
+FLASH_SUPPORTS_UNPADDED_LSE = False
+_USE_PT_FLASH_ATTN = False
+
 try:
     try:
         from ... import _C_flashattention  # type: ignore[attr-defined]
@@ -47,21 +51,33 @@ try:
         if _build_metadata is not None:
             FLASH_VERSION = _build_metadata.flash_version
     except ImportError:
-        import flash_attn
-        from flash_attn.flash_attn_interface import flash_attn_cuda as _C_flashattention
-
-        FLASH_VERSION = flash_attn.__version__
-        FLASH_VER_MIN = (2, 5, 7)
-        FLASH_VER_LAST = (2, 5, 7)  # last supported, inclusive
-        flash_ver_parsed = tuple(int(s) for s in FLASH_VERSION.split(".")[:3])
-        if (
-            flash_ver_parsed < FLASH_VER_MIN or flash_ver_parsed > FLASH_VER_LAST
-        ) and os.environ.get("XFORMERS_IGNORE_FLASH_VERSION_CHECK", "0") != "1":
-            raise ImportError(
-                f"Requires Flash-Attention version >={'.'.join([str(i) for i in FLASH_VER_MIN])},"
-                f"<={'.'.join([str(i) for i in FLASH_VER_LAST])} "
-                f"but got {FLASH_VERSION}."
+        try:
+            import flash_attn
+            from flash_attn.flash_attn_interface import (
+                flash_attn_cuda as _C_flashattention,
             )
+
+            FLASH_VERSION = flash_attn.__version__
+            FLASH_VER_MIN = (2, 5, 7)
+            FLASH_VER_LAST = (2, 5, 7)  # last supported, inclusive
+            flash_ver_parsed = tuple(int(s) for s in FLASH_VERSION.split(".")[:3])
+            if (
+                flash_ver_parsed < FLASH_VER_MIN or flash_ver_parsed > FLASH_VER_LAST
+            ) and os.environ.get("XFORMERS_IGNORE_FLASH_VERSION_CHECK", "0") != "1":
+                raise ImportError(
+                    f"Requires Flash-Attention version >={'.'.join([str(i) for i in FLASH_VER_MIN])},"
+                    f"<={'.'.join([str(i) for i in FLASH_VER_LAST])} "
+                    f"but got {FLASH_VERSION}."
+                )
+
+            # TODO: remove this when unpadded LSE get upstreamed to FA.
+            FLASH_SUPPORTS_UNPADDED_LSE = (
+                "arg19" in _C_flashattention.varlen_fwd.__doc__
+            )
+        except ImportError:
+            assert is_pt_flash_compatible(force=True)
+            FLASH_VERSION = torch.nn.attention._get_flash_version()  # type: ignore
+            _USE_PT_FLASH_ATTN = True
 
     # create library so that flash-attn goes through the PyTorch Dispatcher
     torch.library.define(
@@ -71,7 +87,7 @@ try:
         "int max_seqlen_q, int max_seqlen_k, "
         "float p, float softmax_scale, "
         "bool is_causal, int window_left, "
-        "int window_right, bool return_softmax, Tensor? block_tables) -> (Tensor, Tensor, Tensor)",
+        "int window_right, bool return_softmax, Tensor? block_tables, bool unpadded_lse) -> (Tensor, Tensor, Tensor)",
     )
 
     torch.library.define(
@@ -81,7 +97,7 @@ try:
         "Tensor cu_seqlens_q, Tensor cu_seqlens_k, "
         "int max_seqlen_q, int max_seqlen_k, "
         "float p, float softmax_scale, bool is_causal, "
-        "int window_left, int window_right, Tensor rng_state) -> (Tensor dq, Tensor dk, Tensor dv)",
+        "int window_left, int window_right, Tensor rng_state, bool unpadded_lse) -> (Tensor dq, Tensor dk, Tensor dv)",
     )
 
     @torch.library.impl("xformers_flash::flash_fwd", "default")
@@ -101,66 +117,95 @@ try:
         window_right,
         return_softmax,
         block_tables,
+        unpadded_lse,
     ):
-        if query.__class__.__name__ == "FakeTensor":
-            breakpoint()
-        if cu_seq_lens_q is None:
-            assert cu_seq_lens_k is None
-            assert seqused_k is None
+        if _USE_PT_FLASH_ATTN:
             (
-                out,
-                q_padded,
-                k_padded,
-                v_padded,
-                out_padded,
-                softmax_lse,
-                p,
-                rng_state,
-            ) = _C_flashattention.fwd(
+                attention,
+                logsumexp,
+                philox_seed,
+                philox_offset,
+                _,
+            ) = torch.ops.aten._flash_attention_forward(
                 query,
                 key,
                 value,
-                None,  # out
-                None,  # alibi_slopes
-                p,
-                softmax_scale,
+                cu_seq_lens_q,  # cum_seq_q
+                cu_seq_lens_k,  # cum_seq_k
+                max_seq_len_q,  # max_q
+                max_seq_len_k,  # max_k
+                p,  # dropout_p
                 is_causal,
-                window_left,  # window_size_left
-                window_right,  # window_size_right
-                return_softmax,
-                None,  # rng
+                return_debug_mask=False,
+                scale=softmax_scale,
+                window_size_left=window_left,
+                window_size_right=window_right,
+                seqused_k=seqused_k,
+                alibi_slopes=None,  # alibi_slopes
             )
+            rng_state = torch.stack([philox_seed, philox_offset])
+            return attention, logsumexp, rng_state
         else:
-            (
-                out,
-                q_padded,
-                k_padded,
-                v_padded,
-                out_padded,
-                softmax_lse,
-                p,
-                rng_state,
-            ) = _C_flashattention.varlen_fwd(
-                query,
-                key,
-                value,
-                None,  # out
-                cu_seq_lens_q,
-                cu_seq_lens_k,
-                seqused_k,
-                block_tables,
-                None,  # alibi_slopes
-                max_seq_len_q,
-                max_seq_len_k,
-                p,
-                softmax_scale,
-                False,
-                is_causal,
-                window_left,
-                window_right,
-                return_softmax,
-                None,
-            )
+            if cu_seq_lens_q is None:
+                assert cu_seq_lens_k is None
+                assert seqused_k is None
+                (
+                    out,
+                    q_padded,
+                    k_padded,
+                    v_padded,
+                    out_padded,
+                    softmax_lse,
+                    p,
+                    rng_state,
+                ) = _C_flashattention.fwd(
+                    query,
+                    key,
+                    value,
+                    None,  # out
+                    None,  # alibi_slopes
+                    p,
+                    softmax_scale,
+                    is_causal,
+                    window_left,  # window_size_left
+                    window_right,  # window_size_right
+                    return_softmax,
+                    None,  # rng
+                )
+            else:
+                # TODO: remove this when unpadded LSE get upstreamed to FA.
+                unpadded_lse_arg = [unpadded_lse] if FLASH_SUPPORTS_UNPADDED_LSE else []
+                (
+                    out,
+                    q_padded,
+                    k_padded,
+                    v_padded,
+                    out_padded,
+                    softmax_lse,
+                    p,
+                    rng_state,
+                ) = _C_flashattention.varlen_fwd(
+                    query,
+                    key,
+                    value,
+                    None,  # out
+                    cu_seq_lens_q,
+                    cu_seq_lens_k,
+                    seqused_k,
+                    block_tables,  # block_table
+                    None,  # alibi_slopes
+                    max_seq_len_q,
+                    max_seq_len_k,
+                    p,
+                    softmax_scale,
+                    False,
+                    is_causal,
+                    window_left,
+                    window_right,
+                    return_softmax,
+                    None,
+                    *unpadded_lse_arg,
+                )
         return out, softmax_lse, rng_state
 
     @torch.library.impl_abstract("xformers_flash::flash_fwd")
@@ -168,12 +213,30 @@ try:
         query,
         key,
         value,
-        *args,
-        **kwargs,
+        cu_seq_lens_q,
+        cu_seq_lens_k,
+        seqused_k,
+        max_seq_len_q,
+        max_seq_len_k,
+        p,
+        softmax_scale,
+        is_causal,
+        window_left,
+        window_right,
+        return_softmax,
+        block_tables,
+        unpadded_lse,
     ):
-        B, M, H, K = query.shape
         out = torch.empty_like(query)
-        softmax_lse = torch.empty([B, H, M], device=query.device, dtype=torch.float32)
+        if cu_seq_lens_q is None:
+            B, M, H, K = query.shape
+            lse_shape = [H, B * M] if unpadded_lse else [B, H, M]
+        else:
+            assert unpadded_lse is False
+            M, H, K = query.shape
+            B = cu_seq_lens_q.shape[0] - 1
+            lse_shape = [B, H, max_seq_len_q]
+        softmax_lse = torch.empty(lse_shape, device=query.device, dtype=torch.float32)
         rng_state = torch.empty([2], device=query.device, dtype=torch.int64)
         return out, softmax_lse, rng_state
 
@@ -196,56 +259,86 @@ try:
         window_left,
         window_right,
         rng_state,
+        unpadded_lse,
     ):
-        dq, dk, dv = _create_dq_dk_dv(grads_share_storage, query, key, value)
-        if cu_seq_lens_k is None:
-            assert cu_seq_lens_q is None
-            _C_flashattention.bwd(
+        if _USE_PT_FLASH_ATTN:
+            if rng_state is not None:
+                philox_seed = rng_state[0]
+                philox_offset = rng_state[1]
+            else:
+                philox_seed = philox_offset = None
+            dq, dk, dv = torch.ops.aten._flash_attention_backward(
                 grad,
                 query,
                 key,
                 value,
                 out,
                 lse,
-                dq,
-                dk,
-                dv,
-                None,  # alibi_slopes
-                p,
-                softmax_scale,
-                is_causal,
-                window_left,
-                window_right,
-                False,  # deterministic
-                None,
-                rng_state,
-            )
-        else:
-            _C_flashattention.varlen_bwd(
-                grad,
-                query,
-                key,
-                value,
-                out,
-                lse,
-                dq,
-                dk,
-                dv,
                 cu_seq_lens_q,
                 cu_seq_lens_k,
-                None,  # alibi_slopes
                 max_seq_len_q,
                 max_seq_len_k,
                 p,
-                softmax_scale,
-                False,  # zero_tensors
                 is_causal,
-                window_left,
-                window_right,
-                False,  # deterministic
-                None,
-                rng_state,
+                philox_seed,
+                philox_offset,
+                scale=softmax_scale,
+                window_size_left=window_left,
+                window_size_right=window_right,
             )
+        else:
+            dq, dk, dv = _create_dq_dk_dv(grads_share_storage, query, key, value)
+            if cu_seq_lens_k is None:
+                assert cu_seq_lens_q is None
+                _C_flashattention.bwd(
+                    grad,
+                    query,
+                    key,
+                    value,
+                    out,
+                    lse,
+                    dq,
+                    dk,
+                    dv,
+                    None,  # alibi_slopes
+                    p,
+                    softmax_scale,
+                    is_causal,
+                    window_left,
+                    window_right,
+                    False,  # deterministic
+                    None,
+                    rng_state,
+                )
+            else:
+                # TODO: remove this when unpadded LSE get upstreamed to FA.
+                unpadded_lse_arg = [unpadded_lse] if FLASH_SUPPORTS_UNPADDED_LSE else []
+                _C_flashattention.varlen_bwd(
+                    grad,
+                    query,
+                    key,
+                    value,
+                    out,
+                    lse,
+                    dq,
+                    dk,
+                    dv,
+                    cu_seq_lens_q,
+                    cu_seq_lens_k,
+                    None,  # alibi_slopes
+                    max_seq_len_q,
+                    max_seq_len_k,
+                    p,
+                    softmax_scale,
+                    False,  # zero_tensors
+                    is_causal,
+                    window_left,
+                    window_right,
+                    False,  # deterministic
+                    None,
+                    rng_state,
+                    *unpadded_lse_arg,
+                )
         return dq, dk, dv
 
     @torch.library.impl_abstract("xformers_flash::flash_bwd")
@@ -300,14 +393,7 @@ def _convert_input_format(
 
     attn_bias = inp.attn_bias
     if isinstance(attn_bias, BlockDiagonalMask):
-        # BlockDiagonalMask or BlockDiagonalCausalMask
-        attn_bias.k_seqinfo.seqstart = attn_bias.k_seqinfo.seqstart.to(
-            inp.query.device, non_blocking=True
-        )
-        attn_bias.q_seqinfo.seqstart = attn_bias.q_seqinfo.seqstart.to(
-            inp.query.device, non_blocking=True
-        )
-
+        assert attn_bias.k_seqinfo.seqstart.device == inp.query.device
         cu_seqlen_k = attn_bias.k_seqinfo.seqstart
         cu_seqlen_q = attn_bias.q_seqinfo.seqstart
         max_seqlen_q = attn_bias.q_seqinfo.max_seqlen
@@ -321,15 +407,7 @@ def _convert_input_format(
             PagedBlockDiagonalPaddedKeysMask,
         ),
     ):
-        attn_bias.k_seqinfo.seqstart = attn_bias.k_seqinfo.seqstart.to(
-            inp.query.device, non_blocking=True
-        )
-        attn_bias.q_seqinfo.seqstart = attn_bias.q_seqinfo.seqstart.to(
-            inp.query.device, non_blocking=True
-        )
-        attn_bias.k_seqinfo.seqlen = attn_bias.k_seqinfo.seqlen.to(
-            inp.query.device, non_blocking=True
-        )
+        assert attn_bias.k_seqinfo.seqstart.device == inp.query.device
         cu_seqlen_k = attn_bias.k_seqinfo.seqstart
         cu_seqlen_q = attn_bias.q_seqinfo.seqstart
         max_seqlen_q = attn_bias.q_seqinfo.max_seqlen
@@ -382,7 +460,7 @@ def _convert_input_format(
         query=query,
         key=key,
         value=value,
-        attn_bias=inp.attn_bias,
+        attn_bias=attn_bias,
         p=inp.p,
         scale=inp.scale,
         output_dtype=inp.output_dtype,
@@ -407,6 +485,13 @@ def _is_causal(attn_bias: Optional[Union[torch.Tensor, AttentionBias]]) -> bool:
             PagedBlockDiagonalCausalWithOffsetPaddedKeysMask,
         ),
     )
+
+
+def _is_paged_attention_supported(attn_bias_type) -> bool:
+    if issubclass(attn_bias_type, PagedBlockDiagonalPaddedKeysMask):
+        return FLASH_VERSION > "2.5.6"
+
+    return True
 
 
 def _window_size(
@@ -470,8 +555,21 @@ def _check_strides_for_bmghk(x: torch.Tensor, name: str, reasons: List[str]) -> 
 
 
 def _post_process_lse(
-    lse: torch.Tensor, inp: Inputs, original_query_shape: Tuple[int, ...]
+    lse: torch.Tensor,
+    inp: Inputs,
+    original_query_shape: Tuple[int, ...],
+    unpadded_lse: bool,
 ) -> torch.Tensor:
+    if not inp.is_partial:
+        # (B, H, M)
+        return lse
+    if unpadded_lse and FLASH_SUPPORTS_UNPADDED_LSE:
+        if len(original_query_shape) == 5:
+            # (1, G, H, total_q)
+            return lse.unflatten(0, original_query_shape[2:4]).unsqueeze(0)
+        # (1, H, total_q)
+        return lse.unsqueeze(0)
+
     if not isinstance(
         inp.attn_bias,
         (
@@ -480,14 +578,9 @@ def _post_process_lse(
             PagedBlockDiagonalPaddedKeysMask,
         ),
     ):
-        if inp.is_partial and len(original_query_shape) == 5:
+        if len(original_query_shape) == 5:
             # [B, GH, M] => [B, G, H, M]
             return lse.unflatten(1, original_query_shape[2:4])
-        return lse
-    q_seqinfo = inp.attn_bias.q_seqinfo
-    B = len(q_seqinfo.seqstart_py) - 1
-    if q_seqinfo.max_seqlen * B != original_query_shape[1]:
-        # Heterogeneous batch. We can't fix it.
         return lse
 
     # reshape from (B, G*H, max_seqlen) to (1, G*H, B*max_seqlen)
@@ -528,12 +621,21 @@ class FwOp(AttentionFwOpBase):
         PagedBlockDiagonalCausalWithOffsetPaddedKeysMask,
         PagedBlockDiagonalPaddedKeysMask,
     )
+
+    SUPPORTED_ATTN_BIAS_TYPES = [
+        b for b in SUPPORTED_ATTN_BIAS_TYPES if _is_paged_attention_supported(b)
+    ]
+
     SUPPORTS_DROPOUT = True
     SUPPORTS_CUSTOM_SCALE = True
     SUPPORTS_DIFFERENT_VALUE_EMBED = False
     SUPPORTS_BMGHK = True
     SUPPORTS_PARTIAL = True
-    NAME = f"flshattF@{FLASH_VERSION}"
+    NAME = (
+        f"flshattF@{FLASH_VERSION}-pt"
+        if _USE_PT_FLASH_ATTN
+        else f"flshattF@{FLASH_VERSION}"
+    )
     VERSION = FLASH_VERSION
 
     @classmethod
@@ -544,13 +646,18 @@ class FwOp(AttentionFwOpBase):
         _check_strides_for_bmghk(d.query, "query", reasons)
         _check_strides_for_bmghk(d.key, "key", reasons)
         _check_strides_for_bmghk(d.value, "value", reasons)
-        if d.is_partial and isinstance(
-            d.attn_bias,
-            (
-                BlockDiagonalGappyKeysMask,
-                BlockDiagonalPaddedKeysMask,
-                PagedBlockDiagonalPaddedKeysMask,
-            ),
+
+        if (
+            d.is_partial
+            and not FLASH_SUPPORTS_UNPADDED_LSE
+            and isinstance(
+                d.attn_bias,
+                (
+                    BlockDiagonalGappyKeysMask,
+                    BlockDiagonalPaddedKeysMask,
+                    PagedBlockDiagonalPaddedKeysMask,
+                ),
+            )
         ):
             q_seqinfo = d.attn_bias.q_seqinfo
             if q_seqinfo.min_seqlen != q_seqinfo.max_seqlen:
@@ -578,7 +685,43 @@ class FwOp(AttentionFwOpBase):
             max_seqlen_k,
             seqused_k,
         ) = _convert_input_format(inp, supports_mqa=True)
+        # partial attention never pads LSE
+        unpadded_lse = (
+            needs_gradient
+            and (cls.UNPADDED_LSE or inp.is_partial)
+            and isinstance(
+                inp.attn_bias,
+                (
+                    BlockDiagonalMask,
+                    BlockDiagonalGappyKeysMask,
+                    PagedBlockDiagonalPaddedKeysMask,
+                    BlockDiagonalPaddedKeysMask,
+                ),
+            )
+        )
         if inp.query.numel() > 0 and inp.key.numel() > 0:
+            is_hetergenous = (
+                isinstance(
+                    inp.attn_bias,
+                    (
+                        BlockDiagonalMask,
+                        BlockDiagonalGappyKeysMask,
+                        PagedBlockDiagonalPaddedKeysMask,
+                        BlockDiagonalPaddedKeysMask,
+                    ),
+                )
+                and inp.attn_bias.q_seqinfo.min_seqlen
+                != inp.attn_bias.q_seqinfo.max_seqlen
+            )
+            if (
+                unpadded_lse
+                and inp.is_partial
+                and is_hetergenous
+                and not FLASH_SUPPORTS_UNPADDED_LSE
+            ):
+                raise ValueError(
+                    "Partial attention with heterogeneous queries is not supported."
+                )
             win_left, win_right = _window_size(inp.attn_bias)
             block_tables = (
                 inp.attn_bias.block_tables
@@ -601,20 +744,26 @@ class FwOp(AttentionFwOpBase):
                 window_right=win_right,
                 return_softmax=return_softmax,
                 block_tables=block_tables,
+                unpadded_lse=unpadded_lse,
             )
             out = out.reshape(out_shape)
         else:
             out = torch.zeros(out_shape, device=inp.query.device, dtype=inp.query.dtype)
             rng_state = None
             softmax_lse = torch.empty(
-                [inp.query.shape[0], inp.query.shape[2], inp.query.shape[1]],
+                (
+                    [inp.query.shape[2], inp.query.shape[0] * inp.query.shape[1]]
+                    if unpadded_lse
+                    else [inp.query.shape[0], inp.query.shape[2], inp.query.shape[1]]
+                ),
                 device=inp.query.device,
                 dtype=torch.float32,
             )
         if not needs_gradient:
             return out, None
         ctx = Context(
-            out=out, lse=_post_process_lse(softmax_lse, inp, original_query_shape)
+            out=out,
+            lse=_post_process_lse(softmax_lse, inp, original_query_shape, unpadded_lse),
         )
         if inp.p != 0.0:
             ctx.op_bw = BwOp
@@ -673,7 +822,12 @@ class BwOp(AttentionBwOpBase):
     SUPPORTS_DIFFERENT_VALUE_EMBED = FwOp.SUPPORTS_DIFFERENT_VALUE_EMBED
     IS_DETERMINISTIC = False
     SUPPORTS_BMGHK = False  # NOTE: Don't forget to update fmha doc when changing this!
-    NAME = f"flshattB@{FLASH_VERSION}"
+    SUPPORTS_UNPADDED_LSE = FLASH_SUPPORTS_UNPADDED_LSE
+    NAME = (
+        f"flshattB@{FLASH_VERSION}-pt"
+        if _USE_PT_FLASH_ATTN
+        else f"flshattB@{FLASH_VERSION}"
+    )
     VERSION = FLASH_VERSION
 
     MAX_HEADDIM_DROPOUT_SM8x = 224
@@ -712,9 +866,11 @@ class BwOp(AttentionBwOpBase):
         # assert ctx.lse.is_contiguous()
         assert seqused_k is None
         ctx_lse = ctx.lse
-        assert ctx_lse.shape[2] >= max_seqlen_q
-        if max_seqlen_q != ctx_lse.shape[2]:
-            ctx_lse = ctx_lse[:, :, :max_seqlen_q].contiguous()
+        unpadded_lse = ctx_lse.ndim == 2  # LSE ~ [H, total_q_len]
+        if not unpadded_lse:
+            assert ctx_lse.shape[2] >= max_seqlen_q
+            if max_seqlen_q != ctx_lse.shape[2]:
+                ctx_lse = ctx_lse[:, :, :max_seqlen_q].contiguous()
         kernel_out_shape = [
             *inp.query.shape[:-1],
             inp.value.shape[-1],
@@ -742,6 +898,7 @@ class BwOp(AttentionBwOpBase):
                     window_left=win_left,
                     window_right=win_right,
                     rng_state=ctx.rng_state if inp.p > 0.0 else None,
+                    unpadded_lse=unpadded_lse,
                 )
             )
         else:
@@ -789,3 +946,8 @@ class BwOp(AttentionBwOpBase):
             seqstart_k=cu_seq_lens_k,
             seqstart_q=cu_seq_lens_q,
         )
+
+
+class FlashFwUnpaddedLSE(FwOp):
+    UNPADDED_LSE = True
+    NAME = FwOp.NAME + "_unpadded_lse"

@@ -9,10 +9,7 @@ from functools import wraps
 from typing import Any, Callable, Dict, List, Type, TypeVar, Union
 
 import torch
-from torch.torch_version import TorchVersion
 from typing_extensions import Annotated, get_args, get_origin
-
-from .. import _is_triton_available
 
 
 def get_operator(library: str, name: str):
@@ -149,9 +146,7 @@ def turn_into_pytorch_op(fn: ClsT, dispatch_key: str) -> ClsT:
         ba = sign.bind(*args, **kwargs)
         for name, value in ba.arguments.items():
             if sign.parameters[name].annotation is torch.distributed.ProcessGroup:
-                from .._C import unbox_process_group
-
-                ba.arguments[name] = unbox_process_group(value)
+                ba.arguments[name] = torch.distributed.ProcessGroup.unbox(value)
         return fn(*ba.args, **ba.kwargs)
 
     xformers_lib = get_python_lib()
@@ -164,27 +159,7 @@ def turn_into_pytorch_op(fn: ClsT, dispatch_key: str) -> ClsT:
         ba = sign.bind(*args, **kwargs)
         for name, value in ba.arguments.items():
             if sign.parameters[name].annotation is torch.distributed.ProcessGroup:
-                from .._C import box_process_group
-
-                ba.arguments[name] = box_process_group(value)
+                ba.arguments[name] = value.boxed()
         return dispatcher_impl(*ba.args, **ba.kwargs)
 
     return caller  # type: ignore
-
-
-def _has_triton2():
-    if not _is_triton_available():
-        return False
-    import triton
-
-    tv = TorchVersion(triton.__version__)
-    return tv >= (2, 1) or tv == (2, 0)
-
-
-def _has_triton21():
-    if not _is_triton_available():
-        return False
-    import triton
-
-    tv = TorchVersion(triton.__version__)
-    return tv >= (2, 1)

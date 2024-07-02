@@ -15,6 +15,7 @@ from ..common import get_xformers_operator, register_operator
 from . import attn_bias
 from .attn_bias import (
     AttentionBias,
+    AttentionBiasSubTensor,
     BlockDiagonalCausalLocalAttentionFromBottomRightMask,
     BlockDiagonalCausalLocalAttentionMask,
     BlockDiagonalCausalMask,
@@ -42,33 +43,34 @@ def _minimum_gemm_alignment(inp: Inputs) -> int:
 
 def _get_seqlen_info(
     inp: Inputs,
-) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], int]:
+) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], int, int]:
     attn_bias = inp.attn_bias
     if isinstance(
         attn_bias, (BlockDiagonalMask, BlockDiagonalCausalWithOffsetPaddedKeysMask)
     ):
+        attn_bias.k_seqinfo.to(inp.query.device)
+        attn_bias.q_seqinfo.to(inp.query.device)
         seqstart_k = attn_bias.k_seqinfo.seqstart
         seqstart_q = attn_bias.q_seqinfo.seqstart
         max_seqlen_q = attn_bias.q_seqinfo.max_seqlen
+        max_seqlen_k = attn_bias.k_seqinfo.max_seqlen
     else:
         seqstart_k = None
         seqstart_q = None
         max_seqlen_q = -1
+        max_seqlen_k = -1
 
-    return (
-        seqstart_k,
-        seqstart_q,
-        max_seqlen_q,
-    )
+    return seqstart_k, seqstart_q, max_seqlen_q, max_seqlen_k
 
 
 def _get_tensor_bias(
     attn_bias: Optional[Union[torch.Tensor, AttentionBias]]
 ) -> Optional[torch.Tensor]:
-    if isinstance(attn_bias, torch.Tensor):
+    if isinstance(attn_bias, AttentionBiasSubTensor):
+        if isinstance(attn_bias, LowerTriangularMaskWithTensorBias):
+            return attn_bias._subtensor
+    elif isinstance(attn_bias, torch.Tensor):
         return attn_bias
-    elif isinstance(attn_bias, LowerTriangularMaskWithTensorBias):
-        return attn_bias._bias
     return None
 
 
@@ -156,7 +158,7 @@ class FwOp(AttentionFwOpBase):
     OPERATOR = get_xformers_operator("efficient_attention_forward_ck")
     SUPPORTED_DEVICES: Set[str] = {"cuda"}
     SUPPORTED_DTYPES: Set[torch.dtype] = {torch.half, torch.bfloat16}
-    SUPPORTED_MAX_K = 512
+    SUPPORTED_MAX_K = 256
 
     SUPPORTED_ATTN_BIAS_TYPES: Iterable[Any] = (
         type(None),
@@ -173,7 +175,7 @@ class FwOp(AttentionFwOpBase):
         BlockDiagonalCausalLocalAttentionFromBottomRightMask,
     )
 
-    SUPPORTS_DROPOUT = False
+    SUPPORTS_DROPOUT = True
     SUPPORTS_CUSTOM_SCALE = True
     SUPPORTS_DIFFERENT_VALUE_EMBED = True
     SUPPORTS_BMGHK = True
@@ -181,7 +183,7 @@ class FwOp(AttentionFwOpBase):
 
     ERROR_ATOL: Mapping[torch.dtype, float] = {
         torch.float: 3e-4,
-        torch.half: 4e-3,
+        torch.half: 6e-3,
         torch.bfloat16: 2.8e-2,
     }
     ERROR_RTOL: Mapping[torch.dtype, float] = {
@@ -266,7 +268,7 @@ class FwOp(AttentionFwOpBase):
     ) -> Tuple[torch.Tensor, Optional[Context]]:
         if type(inp.attn_bias) not in FwOp.SUPPORTED_ATTN_BIAS_TYPES:
             raise NotImplementedError("Unsupported attn_bias type")
-        seqstart_k, seqstart_q, max_seqlen_q = _get_seqlen_info(inp)
+        seqstart_k, seqstart_q, max_seqlen_q, _ = _get_seqlen_info(inp)
         out, lse, rng_seed, rng_offset = cls.OPERATOR(
             query=inp.query,
             key=inp.key,
@@ -323,11 +325,7 @@ class FwOp(AttentionFwOpBase):
         check_lastdim_alignment_stride1(reasons, "query", d.query, matmul_alignment_mn)
         check_lastdim_alignment_stride1(reasons, "value", d.value, matmul_alignment_mn)
         _check_bias_alignment(reasons, d.attn_bias)
-        requires_grad = (
-            d.query.requires_grad or d.key.requires_grad or d.value.requires_grad
-        )
-        if requires_grad:
-            reasons.append("Gradience is currently not supported by ck-tiled!")
+        _check_large_shapes(reasons, d)
         return reasons
 
     @classmethod
@@ -362,21 +360,19 @@ class BwOp(AttentionBwOpBase):
     OPERATOR = get_xformers_operator("efficient_attention_backward_ck")
     SUPPORTED_DEVICES = FwOp.SUPPORTED_DEVICES
     SUPPORTED_DTYPES = FwOp.SUPPORTED_DTYPES
-    SUPPORTED_MAX_K = FwOp.SUPPORTED_MAX_K
+    SUPPORTED_MAX_K = 128
     SUPPORTED_ATTN_BIAS_TYPES: Iterable[Any] = (
         type(None),
         torch.Tensor,
         LowerTriangularMask,
-        # LowerTriangularFromBottomRightMask,
-        # TODO: Still some infs/nans in the BW pass for
-        # local + causal
-        # LowerTriangularFromBottomRightLocalAttentionMask,
+        LowerTriangularFromBottomRightMask,
+        LowerTriangularFromBottomRightLocalAttentionMask,
         # TODO: Fix handling of gradient through the fMHA autograd function
         # LowerTriangularMaskWithTensorBias,
         BlockDiagonalMask,
         BlockDiagonalCausalMask,
         attn_bias.BlockDiagonalCausalFromBottomRightMask,
-        # attn_bias.BlockDiagonalCausalLocalAttentionMask,
+        attn_bias.BlockDiagonalCausalLocalAttentionMask,
     )
     SUPPORTS_ATTN_BIAS_GRAD = True
     SUPPORTS_DROPOUT = FwOp.SUPPORTS_DROPOUT
@@ -386,8 +382,8 @@ class BwOp(AttentionBwOpBase):
 
     _TEST_K: List[int] = [
         32,  # 64x64 kernel
+        64,
         128,  # 64x128/128x128 kernel
-        256,  # 64x128 with accumulation in gmem
     ]
 
     @classmethod
@@ -422,7 +418,6 @@ class BwOp(AttentionBwOpBase):
                 )
         _check_large_shapes(reasons, d)
 
-        reasons.append("Backward is currently not supported by ck-tiled!")
         return reasons
 
     @classmethod
@@ -430,7 +425,7 @@ class BwOp(AttentionBwOpBase):
         if type(inp.attn_bias) not in BwOp.SUPPORTED_ATTN_BIAS_TYPES:
             raise NotImplementedError("Unsupported attn_bias type")
 
-        seqstart_k, seqstart_q, max_seqlen_q = _get_seqlen_info(inp)
+        seqstart_k, seqstart_q, max_seqlen_q, max_seqlen_k = _get_seqlen_info(inp)
         dtype = inp.query.dtype
 
         rng_seed = rng_offset = 0
@@ -453,6 +448,7 @@ class BwOp(AttentionBwOpBase):
             seqstart_q=seqstart_q,
             seqstart_k=seqstart_k,
             max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
             seqlen_k=(
                 inp.attn_bias.k_seqinfo.seqlen
                 if isinstance(
@@ -471,6 +467,18 @@ class BwOp(AttentionBwOpBase):
             rng_offset=rng_offset,
             custom_mask_type=_custom_mask_type(inp.attn_bias),
             scale=inp.scale,
+            window_size=(
+                inp.attn_bias._window_size
+                if isinstance(
+                    inp.attn_bias,
+                    (
+                        BlockDiagonalCausalLocalAttentionMask,
+                        BlockDiagonalCausalLocalAttentionFromBottomRightMask,
+                        LowerTriangularFromBottomRightLocalAttentionMask,
+                    ),
+                )
+                else None
+            ),
         )
 
         # c++/CUDA implementation returns an uninitialized tensor if bias doesn't
