@@ -10,7 +10,7 @@ on:
         required: true
         default: 'warning'
   schedule:
-    - cron: "15 0 * * *"
+    - cron: "15 1 * * *"
 
 jobs:
   build:
@@ -49,41 +49,45 @@ jobs:
         export ROCM_PATH=/opt/rocm
         echo ROCM_PATH         = $ROCM_PATH
 
-        export MAX_JOBS=64
-        echo MAX_JOBS          = $MAX_JOBS
-
         hipcc --version
         rocm-smi
         rocminfo | grep "gfx"
-
-        python3 -VV
-
-    - name: Build XFormers
+        
+    - name: Setup build env
       run: |
-        pip3 install --upgrade pip
-        pip3 uninstall -y xformers
-        MAX_JOBS=$MAX_JOBS pip3 install -e ./_xformers --verbose
-        pip3 install scipy==1.10
+        conda create -n xformers python=3.11
+        export PATH=/opt/conda/envs/xformers/bin:$PATH
+        python -VV
+        
+        python -m pip install -U torch --index-url=https://download.pytorch.org/whl/nightly/rocm6.1 
+        python -c "import torch; print(f'PyTorch version {torch.__version__}')"
+        
+        python -m pip install ninja scipy pytest pytest-html
 
-        python3 -c "import torch; print(f'PyTorch version {torch.__version__}')"
-        python3 -m xformers.info
+    - name: Build xformers
+      run: |
+        export PATH=/opt/conda/envs/xformers/bin:$PATH
+        export MAX_JOBS=144
+        
+        python -m pip install ./_xformers --verbose
+        python -m xformers.info
 
     - name: Run python tests
       run: |
-        pytest -rpfs ./_xformers/tests/test_mem_eff_attention.py | tee test_mem_eff_attention.log
+        export PATH=/opt/conda/envs/xformers/bin:$PATH
+        
+        python -m pytest --html=test_mem_eff_attention.html --self-contained-html -rpfs ./_xformers/tests/test_mem_eff_attention.py -k "not flshatt"
     
     - name: Archive logs
+      if: '!cancelled()'
       uses: actions/upload-artifact@v4
       with:
         name: test results
-        path: test_mem_eff_attention.log
-
-    - name: Process test results
-      run: |
-        echo "Processing test results TBD"
+        path: test_mem_eff_attention.html
 
   clean:
     runs-on: self-hosted
+    if: ${{ always() }}
     needs: [build]
     steps:
       - name: Remove dangling Docker images
