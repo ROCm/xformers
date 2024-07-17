@@ -23,7 +23,8 @@ def get_operator(library: str, name: str):
 
     try:
         return getattr(getattr(torch.ops, library), name)
-    except (RuntimeError, AttributeError):
+    except (RuntimeError, AttributeError) as e:
+        print(f"Error in get_operator for {library}::{name}: {e}")
         return no_such_operator
 
 
