@@ -127,7 +127,7 @@ struct grouped_forward_splitkv_causalmask_bias_dropout_dispatch {
       using FmhaTileShape =
           typename FmhaFwdSplitKVShape<MaxK, MaxSeqlenQ>::Type;
 
-      constexpr ck_tile::index_t kM0 = FmhaTileShape::kM0 / 2;
+      constexpr ck_tile::index_t kM0 = ck_tile::max(16, FmhaTileShape::kM0 / 2);
       constexpr ck_tile::index_t kN1 = FmhaTileShape::kN1 / 2;
 
       using FmhaTilePartitioner =

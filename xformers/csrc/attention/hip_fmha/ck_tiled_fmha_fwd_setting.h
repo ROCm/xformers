@@ -141,6 +141,13 @@ struct FmhaFwdSplitKVBlockTile<64, MaxSeqlenQ> {
 template struct FmhaFwdSplitKVBlockTile<64>;
 
 template <>
+struct FmhaFwdSplitKVBlockTile<128, 16> {
+  using type = ck_tile::sequence<16, 128, 32, 128, 32, 128>;
+  using gemm0_warps = ck_tile::sequence<1, 1, 1>;
+  using gemm1_warps = ck_tile::sequence<1, 4, 1>;
+};
+
+template <>
 struct FmhaFwdSplitKVBlockTile<128, 32> {
   using type = ck_tile::sequence<32, 128, 32, 128, 32, 128>;
   using gemm0_warps = ck_tile::sequence<2, 1, 1>;
@@ -179,6 +186,7 @@ struct FmhaFwdSplitKVShape<32, MaxSeqlenQ> {
       IsVLayoutRowMajor>;
 };
 
+template struct FmhaFwdSplitKVShape<32, 16>;
 template struct FmhaFwdSplitKVShape<32, 32>;
 template struct FmhaFwdSplitKVShape<32, 64>;
 
@@ -193,8 +201,20 @@ struct FmhaFwdSplitKVShape<64, MaxSeqlenQ> {
       IsVLayoutRowMajor>;
 };
 
+template struct FmhaFwdSplitKVShape<64, 16>;
 template struct FmhaFwdSplitKVShape<64, 32>;
 template struct FmhaFwdSplitKVShape<64, 64>;
+
+template <>
+struct FmhaFwdSplitKVShape<128, 16> {
+  using Type = ck_tile::TileFmhaShape<
+      typename FmhaFwdSplitKVBlockTile<128, 16>::type,
+      typename FmhaFwdSplitKVBlockTile<128, 16>::gemm0_warps,
+      FmhaFwdSplitKVWarpTile,
+      typename FmhaFwdSplitKVBlockTile<128, 16>::gemm1_warps,
+      FmhaFwdSplitKVWarpTile,
+      IsVLayoutRowMajor>;
+};
 
 template <>
 struct FmhaFwdSplitKVShape<128, 32> {
@@ -229,5 +249,6 @@ struct FmhaFwdSplitKVShape<256, MaxSeqlenQ> {
       IsVLayoutRowMajor>;
 };
 
+template struct FmhaFwdSplitKVShape<256, 16>;
 template struct FmhaFwdSplitKVShape<256, 32>;
 template struct FmhaFwdSplitKVShape<256, 64>;

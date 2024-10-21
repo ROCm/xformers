@@ -11,7 +11,10 @@
 
 #define FMHA_FWD_SEQLEN_Q_SWITCH(SEQLEN_Q, CONST_NAME, ...) \
   [&] {                                                     \
-    if (SEQLEN_Q <= 32) {                                   \
+    if (SEQLEN_Q <= 16) {                                   \
+      constexpr ck_tile::index_t CONST_NAME = 16;           \
+      __VA_ARGS__();                                        \
+    } else if (SEQLEN_Q <= 32) {                            \
       constexpr ck_tile::index_t CONST_NAME = 32;           \
       __VA_ARGS__();                                        \
     } else {                                                \
