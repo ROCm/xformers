@@ -8,7 +8,7 @@
 #include <ATen/Dispatch.h>
 #include <ATen/Functions.h>
 #include <ATen/Tensor.h>
-#include <c10/cuda/CUDAStream.h>
+#include <c10/hip/HIPStream.h>
 #include <torch/library.h>
 
 #include <ck_tile/host/kernel_launch.hpp>
@@ -157,12 +157,16 @@ at::Tensor& efficient_attention_forward_decoder_ck_out_impl(
         TORCH_CHECK(required_vec_size > 0);
         TORCH_CHECK(0 == arg.Q_size_k % required_vec_size);
 
+        auto k4_ = ck_tile::ForwardDecoderAttnKernelImpl<ck_data_t, 4>{};
+        auto k2_ = ck_tile::ForwardDecoderAttnKernelImpl<ck_data_t, 2>{};
+        auto k1_ = ck_tile::ForwardDecoderAttnKernelImpl<ck_data_t, 1>{};
+
         switch (required_vec_size) {
           case 4:
             ck_tile::launch_kernel(
                 ck_stream,
                 ck_tile::make_kernel(
-                    ck_tile::ForwardDecoderAttnKernelImpl<ck_data_t, 4>{},
+                    k4_,
                     grid_size,
                     block_size,
                     lds_bytes,
@@ -172,7 +176,7 @@ at::Tensor& efficient_attention_forward_decoder_ck_out_impl(
             ck_tile::launch_kernel(
                 ck_stream,
                 ck_tile::make_kernel(
-                    ck_tile::ForwardDecoderAttnKernelImpl<ck_data_t, 2>{},
+                    k2_,
                     grid_size,
                     block_size,
                     lds_bytes,
@@ -182,7 +186,7 @@ at::Tensor& efficient_attention_forward_decoder_ck_out_impl(
             ck_tile::launch_kernel(
                 ck_stream,
                 ck_tile::make_kernel(
-                    ck_tile::ForwardDecoderAttnKernelImpl<ck_data_t, 1>{},
+                    k1_,
                     grid_size,
                     block_size,
                     lds_bytes,
@@ -228,3 +232,45 @@ TORCH_LIBRARY_IMPL(xformers, CUDA, m) {
       TORCH_SELECTIVE_NAME("xformers::efficient_attention_forward_decoder_ck"),
       TORCH_FN(efficient_attention_forward_decoder_ck));
 }
+
+#ifdef ATTN_FWD_DECODER_MAIN
+// helper driver for debugging
+
+#include <torch/torch.h>
+
+static void do_correctness_check() {
+  const int32_t D = 4 * kThreadsPerWavefront;
+  const int32_t B = 1;
+  const int32_t H = 4;
+  const int32_t G = 1;
+  auto options = torch::TensorOptions()
+                     .dtype(torch::kFloat32)
+                     .layout(torch::kStrided)
+                     .device(torch::kCUDA, 1)
+                     .requires_grad(false);
+  auto int_options = options.dtype(torch::kInt);
+  auto XQ = at::randn({B, 1, G, H, D}, options);
+  auto K = at::randn({B, 4096, G, H, D}, options);
+  auto V = at::randn({B, 4096, G, H, D}, options);
+  auto seq = at::randint(63, 128, {B}, int_options);
+  double qk_scale = 1. / sqrt(D);
+
+  auto result = efficient_attention_forward_decoder_ck_impl<64, 1>(
+      XQ, K, V, seq, qk_scale);
+  auto gold_result = efficient_attention_forward_decoder_ck_impl<64, 2>(
+      XQ, K, V, seq, qk_scale);
+  auto mask = at::isclose(
+      result, gold_result, /*atol*/ 1e-3, /*rtol*/ 1e-5, /*equal_nan*/ false);
+  auto percent_match = at::sum(mask.to(torch::kFloat32)) / mask.numel();
+  printf(
+      "Mismatched elements percentage: %.2f\n",
+      1. - percent_match.item<float>());
+}
+
+int main(int argc, char** argv) {
+  if (argc == 1) {
+    do_correctness_check();
+  }
+  return 0;
+}
+#endif
