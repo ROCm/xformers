@@ -101,7 +101,7 @@ at::Tensor& efficient_attention_forward_decoder_ck_out_impl(
       block_size
           .y; // 4 * threadsPerBlock * sizeof(float) == sizeof(O[b][0][h][:])
   const size_t lds_bytes = max(smem_softmax, smem_output);
-  auto stream = at::hip::getCurrentHIPStream().stream();
+  auto ck_stream = ck_tile::stream_config{at::hip::getCurrentHIPStream().stream()};
 
   AT_DISPATCH_SWITCH_3(
       at::ScalarType::Half,
@@ -145,7 +145,7 @@ at::Tensor& efficient_attention_forward_decoder_ck_out_impl(
             static_cast<int32_t>(XQ_acc.size(4)),
             static_cast<int32_t>(K_acc.size(1)),
             K_acc.size(3) == 1,
-            (float)qk_scale};
+            static_cast<float>(qk_scale)};
         auto required_vec_size = 0;
 
         for (auto vec_size : {4, 2, 1}) {
@@ -155,11 +155,12 @@ at::Tensor& efficient_attention_forward_decoder_ck_out_impl(
         }
 
         TORCH_CHECK(required_vec_size > 0);
+        TORCH_CHECK(0 == arg.Q_size_k % required_vec_size);
 
         switch (required_vec_size) {
           case 4:
             ck_tile::launch_kernel(
-                ck_tile::stream_config{stream},
+                ck_stream,
                 ck_tile::make_kernel(
                     ck_tile::ForwardDecoderAttnKernelImpl<ck_data_t, 4>{},
                     grid_size,
@@ -169,7 +170,7 @@ at::Tensor& efficient_attention_forward_decoder_ck_out_impl(
             break;
           case 2:
             ck_tile::launch_kernel(
-                ck_tile::stream_config{stream},
+                ck_stream,
                 ck_tile::make_kernel(
                     ck_tile::ForwardDecoderAttnKernelImpl<ck_data_t, 2>{},
                     grid_size,
@@ -179,7 +180,7 @@ at::Tensor& efficient_attention_forward_decoder_ck_out_impl(
             break;
           case 1:
             ck_tile::launch_kernel(
-                ck_tile::stream_config{stream},
+                ck_stream,
                 ck_tile::make_kernel(
                     ck_tile::ForwardDecoderAttnKernelImpl<ck_data_t, 1>{},
                     grid_size,
