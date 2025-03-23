@@ -52,6 +52,16 @@ struct batched_infer_mask_bias_dropout_dispatch {
       FmhaMask,
       FmhaTraits>;
 
+  static bool use_q_tile_group_kernel(
+      ck_tile::index_t batches,
+      ck_tile::index_t nheads,
+      ck_tile::index_t seqlen_q) {
+    ck_tile::index_t num_total_tile = batches * nheads *
+        ck_tile::integer_divide_ceil(seqlen_q, FmhaShape::kM0);
+
+    return get_number_of_cu() * 2 * 10 <= num_total_tile;
+  };
+
   static void Run(BatchedForwardParams& param, hipStream_t stream) {
     using FmhaMask = ck_tile::SimplifiedGenericAttentionMask<kHasMask>;
 
@@ -157,9 +167,17 @@ struct batched_infer_mask_bias_dropout_dispatch {
                   true,
                   true>>;
 
-          using FmhaKernel = ck_tile::FmhaFwdKernel<FmhaPipeline, FmhaEpilogue>;
+          if (use_q_tile_group_kernel(param.B, param.Hq, param.M)) {
+            using FmhaKernel =
+                ck_tile::FmhaFwdQTileGroupKernel<FmhaPipeline, FmhaEpilogue>;
 
-          RunWithKernel<FmhaKernel>(param, stream);
+            RunWithKernel<FmhaKernel>(param, stream);
+          } else {
+            using FmhaKernel =
+                ck_tile::FmhaFwdKernel<FmhaPipeline, FmhaEpilogue>;
+
+            RunWithKernel<FmhaKernel>(param, stream);
+          };
         } else {
           /* runtime will never get here, so no codes to compile */
         };
@@ -223,6 +241,8 @@ struct batched_infer_mask_bias_dropout_dispatch {
         FmhaKernel::GridSize(param.B, param.Hq, param.M, param.Kv, false);
     constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
+
+    std::cout << "kGridSize: " << kGridSize.x << " " << kGridSize.y << " " << kGridSize.z << std::endl;
 
     (void)ck_tile::launch_kernel(
         ck_tile::stream_config{stream, false},
