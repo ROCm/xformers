@@ -186,6 +186,7 @@ template<typename FmhaTraits>
           param.scale,
           1.0f, // scale_p
           1.0f, // scale_o
+          0.f, // logits_soft_cap
           param.q_strides[0], // q, k, v, bias, randval, out tensor seq-dim
                               // stride
           param.k_strides[0],

@@ -602,6 +602,7 @@ def get_extensions():
                 "-amdgpu-function-calls=false",
                 "-mllvm",
                 "-greedy-reverse-local-assignment=1",
+                "-ferror-limit=1",
             ]
             + generator_flag
             + cc_flag,

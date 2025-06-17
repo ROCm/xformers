@@ -243,6 +243,7 @@ template<typename FmhaTraits>
             param.use_paged_kvcache ? param.is_gappy : false,
             param.scale,
             1.0f, // scale_p
+            0.0f, // logits_soft_cap
             param.q_strides[0], // q, k, v, bias, out_acc tensor seq-dim
                                 // stride
             param.k_strides[0],
@@ -289,6 +290,7 @@ template<typename FmhaTraits>
             param.use_paged_kvcache ? param.is_gappy : false,
             param.scale,
             1.0f, // scale_p
+            0.0f, // logits_soft_cap
             param.q_strides[0], // q, k, v, bias, out tensor seq-dim
                                 // stride
             param.k_strides[0],
