@@ -24,9 +24,10 @@ template <
     ck_tile::index_t MaxK,
     ck_tile::index_t MTile>
 struct batched_forward_mask_bias_dropout_dispatch {
-
-  template<typename FmhaTraits>
-  using AttentionVariant = ck_tile::ComposedAttention<FmhaTraits::kHasLogitsSoftCap * ck_tile::LOGITS_SOFT_CAP, CK_TILE_FMHA_FWD_FAST_EXP2>;
+  template <typename FmhaTraits>
+  using AttentionVariant = ck_tile::ComposedAttention<
+      FmhaTraits::kHasLogitsSoftCap * ck_tile::LOGITS_SOFT_CAP,
+      CK_TILE_FMHA_FWD_FAST_EXP2>;
 
   template <typename FmhaTraits, typename FmhaMask>
   using FmhaPipelineProblemTemp = ck_tile::BlockFmhaPipelineProblem<
@@ -84,7 +85,7 @@ struct batched_forward_mask_bias_dropout_dispatch {
               kPadSeqLenK,
               kPadHeadDim, // kPadHeadDimQ
               kPadHeadDim, // kPadHeadDimV
-              false, // kHasLogitsSoftCap 
+              false, // kHasLogitsSoftCap
               kBiasEnum,
               false, // kHasBiasGrad place-holder
               true, // kStoreLSE

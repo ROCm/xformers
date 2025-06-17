@@ -34,8 +34,10 @@ struct batched_infer_mask_bias_dropout_dispatch {
       (kUseWholeKPrefetchPipeline || MaxK > 256) ? FmhaShape::kQKHeaddim
                                                  : FmhaShape::kSubQKHeaddim;
 
-  template<typename FmhaTraits>
-  using AttentionVariant = ck_tile::ComposedAttention<FmhaTraits::kHasLogitsSoftCap * ck_tile::LOGITS_SOFT_CAP, CK_TILE_FMHA_FWD_FAST_EXP2>;
+  template <typename FmhaTraits>
+  using AttentionVariant = ck_tile::ComposedAttention<
+      FmhaTraits::kHasLogitsSoftCap * ck_tile::LOGITS_SOFT_CAP,
+      CK_TILE_FMHA_FWD_FAST_EXP2>;
 
   template <typename FmhaTraits, typename FmhaMask>
   using FmhaPipelineProblemTemp = ck_tile::BlockFmhaPipelineProblem<
@@ -142,7 +144,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
               kPadSeqLenK,
               true, // kPadHeadDimQ,
               true, // kPadHeadDimV,
-              false, // kHasLogitsSoftCap 
+              false, // kHasLogitsSoftCap
               kBiasEnum,
               false, // kHasBiasGrad place-holder
               false, // kStoreLSE
