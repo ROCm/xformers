@@ -16,6 +16,22 @@ struct FmhaFwdBlockTile;
 
 // Tile-sizes: M N0 K0 N1 K1 MaxK (MaxK % K0 == 0, MaxK % N1 == 0, N0 % K1 == 0)
 //
+
+
+template <>
+struct FmhaFwdBlockTile<128, 16> {
+  using type = ck_tile::sequence<16, 128, 32, 128, 32, 128>;
+  using gemm0_warps = ck_tile::sequence<1, 1, 1>;
+  using gemm1_warps = ck_tile::sequence<1, 1, 1>;
+};
+
+template <>
+struct FmhaFwdBlockTile<128, 32> {
+  using type = ck_tile::sequence<32, 128, 32, 128, 32, 128>;
+  using gemm0_warps = ck_tile::sequence<2, 1, 1>;
+  using gemm1_warps = ck_tile::sequence<2, 1, 1>;
+};
+
 template <ck_tile::index_t MTile>
 struct FmhaFwdBlockTile<32, MTile> {
   using type = ck_tile::sequence<64, 64, 16, 32, 32, 32>;
@@ -123,6 +139,28 @@ struct FmhaFwdShape<96, MTile> {
 
 template struct FmhaFwdShape<96, 64>;
 template struct FmhaFwdShape<96, 128>;
+
+template <>
+struct FmhaFwdShape<128, 16> {
+  using Type = ck_tile::TileFmhaShape<
+      typename FmhaFwdBlockTile<128, 16>::type,
+      typename FmhaFwdBlockTile<128, 16>::gemm0_warps,
+      FmhaFwdWarpTile2,
+      typename FmhaFwdBlockTile<128, 16>::gemm1_warps,
+      FmhaFwdWarpTile2,
+      IsVLayoutRowMajor>;
+};
+
+template <>
+struct FmhaFwdShape<128, 32> {
+  using Type = ck_tile::TileFmhaShape<
+      typename FmhaFwdBlockTile<128, 32>::type,
+      typename FmhaFwdBlockTile<128, 32>::gemm0_warps,
+      FmhaFwdWarpTile2,
+      typename FmhaFwdBlockTile<128, 32>::gemm1_warps,
+      FmhaFwdWarpTile2,
+      IsVLayoutRowMajor>;
+};
 
 template <>
 struct FmhaFwdShape<128, 64> {
