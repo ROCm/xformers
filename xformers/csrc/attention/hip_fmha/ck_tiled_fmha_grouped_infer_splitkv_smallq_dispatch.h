@@ -418,7 +418,8 @@ struct grouped_infer_splitkv_smallq_mask_bias_dropout_dispatch {
         param.Hkv,
         param.max_seqlen_q,
         param.Kv,
-        param.num_kv_splits);
+        param.num_kv_splits,
+        kargs.seqlen_k_ptr != nullptr);
     constexpr dim3 kBlockSize = FmhaFwdSplitKVKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaFwdSplitKVKernel::kBlockPerCu;
 
