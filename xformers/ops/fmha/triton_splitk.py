@@ -576,8 +576,8 @@ class FwOp(AttentionFwOpBase):
                             BLOCK_N = 64
                 else:
                     num_warps = 1
-                    num_stages = 1
-                    BLOCK_N = 64
+                    num_stages = 2
+                    BLOCK_N = 16
             else:
                 should_modify_warp_and_block = (
                     Kkv == 128
