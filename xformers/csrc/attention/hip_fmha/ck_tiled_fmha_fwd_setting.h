@@ -184,8 +184,12 @@ static int get_fmha_fwd_mtile(
   int batch_nhead_mblocks =
       num_batches * num_heads * ceildiv(max_seqlen_q, 128);
 
-  if (batch_nhead_mblocks >= 0.8 * num_SMs)
+  if (batch_nhead_mblocks >= 0.8 * num_SMs) {
+    // try to reduce tail affect
+    if (batch_nhead_mblocks <= 1.5 * num_SMs)
+      return 64;
     return 128;
+  };
 
   // currently, only hdim-128 can use mtile-64, for other hdim, the settings for
   // mtile-64 can be added through tuning/verification
