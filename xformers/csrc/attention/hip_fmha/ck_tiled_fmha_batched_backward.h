@@ -49,6 +49,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
       false, // kIsDeterministic
       FmhaMask,
       FmhaBlockDropout,
+      false, // kUseTrLoad
       FmhaTraits>;
 
   static constexpr bool NeedConvertGradQ = !std::is_same<
@@ -101,9 +102,6 @@ struct batched_backward_mask_bias_dropout_dispatch {
           ? ck_tile::BlockAttentionBiasEnum::ELEMENTWISE_BIAS
           : ck_tile::BlockAttentionBiasEnum::NO_BIAS;
 
-      constexpr bool kPadSeqLenQ = true;
-      constexpr bool kPadSeqLenK = true;
-
       const bool pad_headdim_q =
           !(param.K % FmhaBwdShape<MaxK>::kQKHeaddim == 0);
       const bool pad_headdim_v =
@@ -112,8 +110,8 @@ struct batched_backward_mask_bias_dropout_dispatch {
       BOOL_SWITCH_2(
           pad_headdim_q, kPadHeadDimQ, pad_headdim_v, kPadHeadDimV, [&] {
             using FmhaBwdTraits_ = ck_tile::TileFmhaTraits<
-                kPadSeqLenQ,
-                kPadSeqLenK,
+                false, // kPadSeqLenQ, not used
+                false, // kPadSeqLenK, not used
                 kPadHeadDimQ,
                 kPadHeadDimV,
                 false, // kHasLogitsSoftCap
@@ -127,25 +125,23 @@ struct batched_backward_mask_bias_dropout_dispatch {
             using FmhaBwdPipelineProblem =
                 FmhaBwdPipelineProblemTemp<FmhaBwdTraits_, FmhaMask>;
 
-            constexpr auto FmhaBwdPipelineEnum_ =
-                FmhaBwdPipelineEnumSelector<MaxK>::value;
-
-            using FmhaBwdPipeline_ = typename FmhaBwdPipelineMaker<
-                FmhaBwdPipelineEnum_,
-                FmhaBwdPipelineProblem>::pipeline;
+            using FmhaBwdPipeline_ =
+                typename ck_tile::BlockFmhaBwdDQDKDVPipelineSelector<
+                    FmhaBwdPipelineProblem,
+                    void>::type;
 
             using FmhaBwdKGradEpilogue_ =
                 ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
                     typename FmhaBwdTypeConfig<ScalarType>::AccDataType,
                     typename FmhaBwdTypeConfig<ScalarType>::KGradDataType,
-                    kPadSeqLenK,
+                    false, // kPadSeqLenK
                     kPadHeadDimQ>>;
 
             using FmhaBwdVGradEpilogue_ =
                 ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
                     typename FmhaBwdTypeConfig<ScalarType>::AccDataType,
                     typename FmhaBwdTypeConfig<ScalarType>::VGradDataType,
-                    kPadSeqLenK,
+                    false, // kPadSeqLenK,
                     kPadHeadDimV>>;
 
             using FmhaBwdDQDKDVKernel_ = ck_tile::FmhaBwdDQDKDVKernel<
@@ -227,7 +223,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
 
     (void)ck_tile::launch_kernel(
         ck_tile::stream_config{stream, false},
-        ck_tile::make_kernel<kBlockSize.x, kBlockPerCu>(
+        ck_tile::make_kernel<kBlockPerCu>(
             FmhaBwdOGradDotOKernel{}, kGridSize, kBlockSize, 0, kargs));
   }
 
@@ -236,7 +232,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
       BatchedBackwardParams& param,
       hipStream_t stream) {
     const auto kargs = [&] {
-      return FmhaBwdDQDKDVKernel::MakeKargs(
+      return FmhaBwdDQDKDVKernel::MakeKargsImpl(
           param.q_ptr,
           param.k_ptr,
           param.v_ptr,
@@ -309,7 +305,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
 
     (void)ck_tile::launch_kernel(
         ck_tile::stream_config{stream, false},
-        ck_tile::make_kernel<kBlockSize.x, kBlockPerCu>(
+        ck_tile::make_kernel<kBlockPerCu>(
             FmhaBwdDQDKDVKernel{}, kGridSize, kBlockSize, 0, kargs));
   }
 
@@ -341,7 +337,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
 
     (void)ck_tile::launch_kernel(
         ck_tile::stream_config{stream, false},
-        ck_tile::make_kernel<kBlockSize.x, kBlockPerCu>(
+        ck_tile::make_kernel<kBlockPerCu>(
             FmhaBwdConvertQGradKernel{}, kGridSize, kBlockSize, 0, kargs));
   }
 };

@@ -56,6 +56,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
       true, // kIsGroupMode
       AttentionVariant<FmhaTraits>,
       FmhaMask,
+      false, // kUseTrLoad
       FmhaTraits>;
 
   static void Run(GroupedForwardParams& param, hipStream_t stream) {
@@ -225,7 +226,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
 
     (void)ck_tile::launch_kernel(
         ck_tile::stream_config{stream, false},
-        ck_tile::make_kernel<kBlockSize.x, kBlockPerCu>(
+        ck_tile::make_kernel<kBlockPerCu>(
             FmhaKernel{}, kGridSize, kBlockSize, 0, kargs));
   };
 };
