@@ -13,6 +13,7 @@
 namespace {
 constexpr int32_t kThreadsPerWavefront = 64;
 constexpr int32_t kWavefrontsPerBlock = 4;
+constexpr int32_t kBlockSize = kThreadsPerWavefront * kWavefrontsPerBlock;
 constexpr int32_t kMaxHeadDimension = 4 * kThreadsPerWavefront;
 constexpr int32_t kMaxKVSequenceLength = 4096;
 constexpr int32_t kLoopUnroll = 16;
@@ -65,13 +66,17 @@ void instantiate_and_launch_kernels(
     hipStream_t stream) {
   auto attn_kernel_impl = ck_tile::ForwardDecoderSplitKAttnKernelImpl<
       ck_data_t,
+      kBlockSize, // required by the latest ck_tile::make_kernel()
       vec_size,
       kLoopUnroll,
       kLoopUnrollTail,
       kMaxKVSequenceLength,
       compute_t>{};
-  auto reduce_kernel_impl = ck_tile::
-      ForwardDecoderSplitKReduceKernelImpl<ck_data_t, vec_size, compute_t>{};
+  auto reduce_kernel_impl = ck_tile::ForwardDecoderSplitKReduceKernelImpl<
+      ck_data_t,
+      kBlockSize, // required by the latest ck_tile::make_kernel()
+      vec_size,
+      compute_t>{};
 
   (void)ck_tile::launch_kernel(
       ck_tile::stream_config{stream, /* benchmark */ false},
