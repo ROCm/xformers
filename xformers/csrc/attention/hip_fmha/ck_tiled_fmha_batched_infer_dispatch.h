@@ -16,6 +16,7 @@
 #include "ck_tiled_fmha_fwd_setting.h"
 #include "ck_tiled_fmha_params.h"
 #include "ck_tiled_headdim_switch.h"
+#include "ck_tiled_fmha_fwd_v3_pipeline_specific_config.h"
 
 template <
     typename ScalarType,
@@ -29,7 +30,10 @@ struct batched_infer_mask_bias_dropout_dispatch {
       (MaxK <= 128 && !kHasDropout);
 
   using FmhaShape = typename FmhaFwdShape<MaxK, MTile>::Type;
-
+#if defined(FMHA_BUILD_ON_GFX950)
+  using FmhaV3Shape = typename FmhaFwdV3Shape::Type;
+#endif
+  
   static constexpr ck_tile::index_t kKLoadLength =
       (kUseWholeKPrefetchPipeline || MaxK > 256) ? FmhaShape::kQKHeaddim
                                                  : FmhaShape::kSubQKHeaddim;
@@ -59,6 +63,24 @@ struct batched_infer_mask_bias_dropout_dispatch {
       false, // kUseTrLoad
       FmhaTraits>;
 
+#if defined(FMHA_BUILD_ON_GFX950)
+  template <typename FmhaTraits, typename FmhaMask>
+  using FmhaPipelineProblemV3Temp = ck_tile::BlockFmhaFwdV3PipelineProblem<
+      typename FmhaFwdTypeConfig<ScalarType>::QDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::KDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::VDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::SaccDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::SMPLComputeDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::LSEDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::PDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::ODataType,
+      FmhaV3Shape,
+      false, // kIsGroupMode
+      FmhaMask,
+      FmhaTraits>;
+#endif
+  
   static void Run(BatchedForwardParams& param, hipStream_t stream) {
     using FmhaMask = ck_tile::SimplifiedGenericAttentionMask<kHasMask>;
 
@@ -80,6 +102,82 @@ struct batched_infer_mask_bias_dropout_dispatch {
     const bool use_async_pipeline =
         (!kHasBias && (param.K % 8 == 0) && (param.Kv % 8 == 0) &&
          (MaxK <= 128 && MTile == 128));
+
+#if defined(FMHA_BUILD_ON_GFX950)
+    // Check whether BatchedForwardParams is in specific setting configs
+    // If True, use fmha_fwd_v3_pipeline
+    // This is the hack part, which needs to be modified later
+    int device_id = 0;
+    hipDeviceProp_t prop;
+    hipError_t err = hipGetDeviceProperties(&prop, device_id);
+    if (err != hipSuccess) {
+      throw std::runtime_error("hipGetDeviceProperties failed");
+    }
+    std::string device_name = prop.gcnArchName;
+
+    bool use_fmha_fwd_v3_pipeline = false;
+    if(std::is_same<ScalarType, ck_tile::bf16_t>::value) {
+        for (const auto& cfg : g_fmha_fwd_v3_pipeline_bf16_specific_configs) {
+            if (cfg.device_name == device_name &&
+                cfg.B == param.B && cfg.M == param.M && cfg.N == param.N &&
+                cfg.Hq == param.Hq && cfg.Hkv == param.Hkv &&
+                cfg.K == param.K && cfg.Kv == param.Kv &&
+                cfg.kHasMask == kHasMask) {
+                use_fmha_fwd_v3_pipeline = true;
+                break;
+            }
+        }
+    } else if(std::is_same<ScalarType, ck_tile::fp16_t>::value) {
+        for (const auto& cfg : g_fmha_fwd_v3_pipeline_fp16_specific_configs) {
+            if (cfg.device_name == device_name &&
+                cfg.B == param.B && cfg.M == param.M && cfg.N == param.N &&
+                cfg.Hq == param.Hq && cfg.Hkv == param.Hkv &&
+                cfg.K == param.K && cfg.Kv == param.Kv &&
+                cfg.kHasMask == kHasMask) {
+                use_fmha_fwd_v3_pipeline = true;
+                break;
+            }
+        }
+    } else {
+      throw std::runtime_error("ScalarType is not supported!");
+    }
+#endif
+
+#if defined(FMHA_BUILD_ON_GFX950)
+    // Give priority to using fmha_fwd_v3_pipeline
+    if(use_fmha_fwd_v3_pipeline) {
+      if constexpr (MaxK == 128 && MTile == 128) {
+        using FmhaTraits = ck_tile::TileFmhaFwdV3Traits<
+            true, // kPadSeqLenQ,
+            true, // kPadSeqLenK,
+            false, // kPadHeadDimQ,
+            false, // kPadHeadDimV,
+            false, // kStoreLSE
+            occupancy>;
+
+        using FmhaMask = ck_tile::SimplifiedGenericAttentionMask<kHasMask>;
+
+        using FmhaPipelineProblem =
+            FmhaPipelineProblemV3Temp<FmhaTraits, FmhaMask>;
+        
+        using FmhaPipeline =
+            ck_tile::BlockFmhaFwdV3Pipeline<FmhaPipelineProblem>;
+        
+        using FmhaEpilogue =
+            ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
+                typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
+                typename FmhaFwdTypeConfig<ScalarType>::ODataType,
+                true, // kPadM
+                true, // kPadM
+                true  // UseRawStore
+                >>;
+
+        using FmhaKernel = ck_tile::FmhaFwdV3Kernel<FmhaPipeline, FmhaEpilogue>;
+
+        RunWithKernelForV3<FmhaKernel>(param, stream);
+      }
+    } 
+#endif  
 
     if (!use_async_pipeline) {
       BOOL_SWITCH_3(
@@ -137,7 +235,8 @@ struct batched_infer_mask_bias_dropout_dispatch {
               RunWithKernel<FmhaKernel>(param, stream);
             }
           });
-    } else {
+    } 
+    else {
       BOOL_SWITCH(pad_seqlen_k, kPadSeqLenK, [&] {
         if constexpr (MaxK <= 128 && MTile == 128) {
           using FmhaTraits = ck_tile::TileFmhaTraits<
@@ -156,8 +255,13 @@ struct batched_infer_mask_bias_dropout_dispatch {
           using FmhaPipelineProblem =
               FmhaPipelineProblemTemp<FmhaTraits, FmhaMask>;
 
+#if defined(FMHA_BUILD_ON_GFX950)
+          using FmhaPipeline =
+              ck_tile::BlockFmhaPipelineQRKSVSAsyncTrload<FmhaPipelineProblem>;
+#else
           using FmhaPipeline =
               ck_tile::BlockFmhaPipelineQRKSVSAsync<FmhaPipelineProblem>;
+#endif
 
           using FmhaEpilogue =
               ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
@@ -239,4 +343,57 @@ struct batched_infer_mask_bias_dropout_dispatch {
         ck_tile::make_kernel<kBlockPerCu>(
             FmhaKernel{}, kGridSize, kBlockSize, 0, kargs));
   };
+
+#if defined(FMHA_BUILD_ON_GFX950)
+  template <typename FmhaKernel>
+  static void RunWithKernelForV3(BatchedForwardParams& param, hipStream_t stream) {
+    const auto kargs = [&] {
+      return FmhaKernel::MakeKargs(
+          param.q_ptr,
+          param.k_ptr,
+          param.v_ptr,
+          nullptr, // lse_ptr
+          param.out_ptr,
+          param.M, // seqlen_q
+          param.N, // seqlen_k
+          param.K, // hdim_q
+          param.Kv, // hdim_v
+          param.Hq, // nhead_q
+          param.Hq / param.Hkv, // nhead_ratio_qk
+          param.scale,
+          param.q_strides[1], // q, k, v, out tensor seq-dim
+                              // stride
+          param.k_strides[1],
+          param.v_strides[1],
+          param.out_strides[1],
+          param.q_strides[2], // q, k, v, lse, out tensor
+                              // head-dim stride
+          param.k_strides[2],
+          param.v_strides[2],
+          0, // nhead_stride_lse
+          param.out_strides[2],
+          param.q_strides[0], // q, k, v, lse, out tensor
+                              // batch-dim stride
+          param.k_strides[0],
+          param.v_strides[0],
+          0, // batch_stride_lse
+          param.out_strides[0],
+          (param.window_size > 0) ? param.window_size - 1
+                                  : -1, // window_left_size
+          (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+          param.custom_mask_type);
+    }();
+
+    dim3 kGridSize =
+        FmhaKernel::GridSize(param.B, param.Hq, param.M, param.Kv);
+    constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
+    constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
+
+    (void)ck_tile::launch_kernel(
+        ck_tile::stream_config{stream, false},
+        ck_tile::make_kernel<kBlockPerCu>(
+            FmhaKernel{}, kGridSize, kBlockSize, 0, kargs));
+  };
+#endif
 };
+

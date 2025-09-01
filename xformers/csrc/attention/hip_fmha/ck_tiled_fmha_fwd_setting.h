@@ -174,6 +174,22 @@ struct FmhaFwdShape<512, MTile> {
 template struct FmhaFwdShape<512, 64>;
 template struct FmhaFwdShape<512, 128>;
 
+#if defined(FMHA_BUILD_ON_GFX950)
+struct FmhaFwdV3Shape {
+  using fmha_block_tile      = ck_tile::sequence<256, 32, 128, 128, 32, 128>;
+  using fmha_warp_gemm_shape = ck_tile::sequence<32, 32, 16>;
+  using fmha_block_warps     = ck_tile::sequence<8, 1, 1>;
+
+  using Type = ck_tile::TileFmhaShape<fmha_block_tile,
+                                    fmha_block_warps,
+                                    fmha_warp_gemm_shape,
+                                    fmha_block_warps,
+                                    fmha_warp_gemm_shape,
+                                    true // IsVLayoutRowMajor
+                                    >;
+};
+#endif
+
 static int get_fmha_fwd_mtile(
     int num_batches,
     int num_heads,
