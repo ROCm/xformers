@@ -574,7 +574,7 @@ def get_extensions():
     elif (
         torch.version.hip
         and os.getenv("XFORMERS_CK_FLASH_ATTN", "1") == "1"
-        and (torch.cuda.is_available() or os.getenv("HIP_ARCHITECTURES", "") != "")
+        and (torch.cuda.is_available() or os.getenv("HIP_ARCHITECTURE", "") != "")
     ):
         rename_cpp_cu(source_hip)
         hip_version = get_hip_version(ROCM_HOME)
