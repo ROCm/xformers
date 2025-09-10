@@ -81,6 +81,22 @@ struct batched_infer_mask_bias_dropout_dispatch {
       false, // kIsGroupMode
       FmhaMask,
       FmhaTraits>;
+
+  template <typename FmhaTraits, typename FmhaMask>
+  using FmhaPipelineProblemQRAsyncTrloadTemp = ck_tile::BlockFmhaFwdV3PipelineProblem<
+      typename FmhaFwdTypeConfig<ScalarType>::QDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::KDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::VDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::SaccDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::SMPLComputeDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::LSEDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::PDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::ODataType,
+      FmhaQRAsyncTrloadShape,
+      false, // kIsGroupMode
+      FmhaMask,
+      FmhaTraits>;
 #endif
 
   static void Run(BatchedForwardParams& param, hipStream_t stream) {
@@ -193,7 +209,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
             occupancy>;
 
         using FmhaPipelineProblem =
-            FmhaPipelineProblemTemp<FmhaTraits, FmhaMask>;
+            FmhaPipelineProblemQRAsyncTrloadTemp<FmhaTraits, FmhaMask>;
 
         using FmhaPipeline =
             ck_tile::BlockFmhaPipelineQRKSVSAsyncTrload<FmhaPipelineProblem>;
