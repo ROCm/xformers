@@ -397,6 +397,14 @@ def rename_cpp_cu(cpp_files):
     for entry in cpp_files:
         shutil.copy(entry, os.path.splitext(entry)[0] + ".cu")
 
+def get_rocm_agent_arch():
+    exec_path = "/opt/rocm/bin/rocm_agent_enumerator"
+    if os.path.isfile(exec_path) and os.access(exec_path, os.X_OK):
+        arches = subprocess.check_output([exec_path], universal_newlines=True)
+        arch_list = arches.strip().split()
+        return arch_list[0]
+    else:
+        return "gfx942"
 
 def get_extensions():
     extensions_dir = os.path.join("xformers", "csrc")
@@ -566,7 +574,7 @@ def get_extensions():
     elif (
         torch.version.hip
         and os.getenv("XFORMERS_CK_FLASH_ATTN", "1") == "1"
-        and (torch.cuda.is_available() or os.getenv("HIP_ARCHITECTURES", "") != "")
+        and (torch.cuda.is_available() or os.getenv("HIP_ARCHITECTURE", "") != "")
     ):
         rename_cpp_cu(source_hip)
         hip_version = get_hip_version(ROCM_HOME)
@@ -591,7 +599,16 @@ def get_extensions():
         if use_rtn_bf16_convert == "1":
             cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=3"]
 
-        arch_list = os.getenv("HIP_ARCHITECTURES", "native").split()
+        arch = os.getenv("HIP_ARCHITECTURE", "native")
+
+        if arch == "native":
+            arch = get_rocm_agent_arch()
+
+        if arch not in ["gfx908", "gfx90a", "gfx942", "gfx950"]:
+            raise ValueError(f"Not supported AMD GPU arch: {arch}")
+
+        if arch == "gfx950":
+            cc_flag += ["-DFMHA_BUILD_ON_GFX950"]
 
         offload_compress_flag = []
         if hip_version >= "6.2.":
@@ -600,7 +617,7 @@ def get_extensions():
         extra_compile_args["nvcc"] = [
             "-O3",
             "-std=c++17",
-            *[f"--offload-arch={arch}" for arch in arch_list],
+            f"--offload-arch={arch}",
             *offload_compress_flag,
             "-U__CUDA_NO_HALF_OPERATORS__",
             "-U__CUDA_NO_HALF_CONVERSIONS__",
