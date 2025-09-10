@@ -99,7 +99,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
       false, // kIsGroupMode
       AttentionVariant<FmhaTraits>,
       FmhaMask,
-      false, // kUseTrLoad
+      true, // kUseTrLoad
       FmhaTraits>;
 #endif
 
