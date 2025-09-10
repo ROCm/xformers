@@ -116,7 +116,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
     std::string device_name = prop.gcnArchName;
 
     bool use_fmha_fwd_v3_pipeline = false;
-    if(std::is_same<ScalarType, ck_tile::bf16_t>::value) {
+    if constexpr (std::is_same_v<ScalarType, ck_tile::bf16_t>) {
         for (const auto& cfg : g_fmha_fwd_v3_pipeline_bf16_specific_configs) {
             if (cfg.device_name == device_name &&
                 cfg.B == param.B && cfg.M == param.M && cfg.N == param.N &&
@@ -127,7 +127,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
                 break;
             }
         }
-    } else if(std::is_same<ScalarType, ck_tile::fp16_t>::value) {
+    } else if constexpr (std::is_same_v<ScalarType, ck_tile::fp16_t>) {
         for (const auto& cfg : g_fmha_fwd_v3_pipeline_fp16_specific_configs) {
             if (cfg.device_name == device_name &&
                 cfg.B == param.B && cfg.M == param.M && cfg.N == param.N &&
