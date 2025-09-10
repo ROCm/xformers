@@ -174,8 +174,6 @@ struct batched_infer_mask_bias_dropout_dispatch {
             false, // kStoreLSE
             occupancy>;
 
-        using FmhaMask = ck_tile::SimplifiedGenericAttentionMask<kHasMask>;
-
         using FmhaPipelineProblem =
             FmhaPipelineProblemV3Temp<FmhaTraits, FmhaMask>;
 
