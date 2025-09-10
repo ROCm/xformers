@@ -31,7 +31,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
 
   using FmhaShape = typename FmhaFwdShape<MaxK, MTile>::Type;
 #if defined(FMHA_BUILD_ON_GFX950)
-  using FmhaV3Shape = typename FmhaFwdV3Shape::shape;
+  using FmhaV3Shape = typename FmhaFwdSpecificShapeForV3::shape;
   using FmhaQRAsyncTrloadShape =
       typename FmhaFwdSpecificShapeForQRAsyncTrload::shape;
 #endif
@@ -83,24 +83,25 @@ struct batched_infer_mask_bias_dropout_dispatch {
       FmhaTraits>;
 
   template <typename FmhaTraits, typename FmhaMask>
-  using FmhaPipelineProblemQRAsyncTrloadTemp = ck_tile::BlockFmhaPipelineProblem<
-      typename FmhaFwdTypeConfig<ScalarType>::QDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::KDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::VDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::SaccDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::SMPLComputeDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::BiasDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::RandValOutputDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::LSEDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::PDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
-      typename FmhaFwdTypeConfig<ScalarType>::ODataType,
-      FmhaQRAsyncTrloadShape,
-      false, // kIsGroupMode
-      AttentionVariant<FmhaTraits>,
-      FmhaMask,
-      true, // kUseTrLoad
-      FmhaTraits>;
+  using FmhaPipelineProblemQRAsyncTrloadTemp =
+      ck_tile::BlockFmhaPipelineProblem<
+          typename FmhaFwdTypeConfig<ScalarType>::QDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::KDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::VDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::SaccDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::SMPLComputeDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::BiasDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::RandValOutputDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::LSEDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::PDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::ODataType,
+          FmhaQRAsyncTrloadShape,
+          false, // kIsGroupMode
+          AttentionVariant<FmhaTraits>,
+          FmhaMask,
+          true, // kUseTrLoad
+          FmhaTraits>;
 #endif
 
   static void Run(BatchedForwardParams& param, hipStream_t stream) {
@@ -136,18 +137,17 @@ struct batched_infer_mask_bias_dropout_dispatch {
     bool use_qr_async_trload_pipeline = false;
     if constexpr (std::is_same_v<ScalarType, ck_tile::bf16_t>) {
       for (const auto& cfg : g_fmha_fwd_v3_pipeline_bf16_specific_configs) {
-        if (cfg.device_name == device_name && cfg.B == param.B &&
-            cfg.M == param.M && cfg.N == param.N && cfg.Hq == param.Hq &&
-            cfg.Hkv == param.Hkv && cfg.K == param.K && cfg.Kv == param.Kv &&
-            cfg.kHasMask == kHasMask) {
+        if (cfg.B == param.B && cfg.M == param.M && cfg.N == param.N &&
+            cfg.Hq == param.Hq && cfg.Hkv == param.Hkv && cfg.K == param.K &&
+            cfg.Kv == param.Kv && cfg.kHasMask == kHasMask) {
           use_fmha_fwd_v3_pipeline = true;
           break;
         }
       }
       for (const auto& cfg : g_qr_async_tr_load_pipeline_bf16_configs) {
-        if (cfg.device_name == device_name && cfg.B == param.B &&
-            cfg.M == param.M && cfg.N == param.N && cfg.Hq == param.Hq &&
-            cfg.Hkv == param.Hkv && cfg.K == param.K && cfg.Kv == param.Kv) {
+        if (cfg.B == param.B && cfg.M == param.M && cfg.N == param.N &&
+            cfg.Hq == param.Hq && cfg.Hkv == param.Hkv && cfg.K == param.K &&
+            cfg.Kv == param.Kv) {
           use_qr_async_trload_pipeline = true;
           break;
         }
