@@ -174,34 +174,37 @@ struct FmhaFwdShape<512, MTile> {
 template struct FmhaFwdShape<512, 64>;
 template struct FmhaFwdShape<512, 128>;
 
-// Specific shape for fmha_fwd_v3_pipeline and qr_async_tr_load_pipeline on gfx950
+// Specific shape for fmha_fwd_v3_pipeline and qr_async_tr_load_pipeline on
+// gfx950
 #if defined(FMHA_BUILD_ON_GFX950)
 struct FmhaFwdSpecificShapeForV3 {
-  using block_tile      = ck_tile::sequence<256, 32, 128, 128, 32, 128>;
+  using block_tile = ck_tile::sequence<256, 32, 128, 128, 32, 128>;
   using warp_tile = ck_tile::sequence<32, 32, 16>;
-  using gemm_warps     = ck_tile::sequence<8, 1, 1>;
+  using gemm_warps = ck_tile::sequence<8, 1, 1>;
 
-  using shape = ck_tile::TileFmhaShape<block_tile,
-                                    gemm_warps,
-                                    warp_tile,
-                                    gemm_warps,
-                                    warp_tile,
-                                    true // IsVLayoutRowMajor
-                                    >;
+  using shape = ck_tile::TileFmhaShape<
+      block_tile,
+      gemm_warps,
+      warp_tile,
+      gemm_warps,
+      warp_tile,
+      true // IsVLayoutRowMajor
+      >;
 };
 
 struct FmhaFwdSpecificShapeForQRAsyncTrload {
-  using block_tile      = ck_tile::sequence<32, 32, 128, 128, 32, 128>;
+  using block_tile = ck_tile::sequence<32, 32, 128, 128, 32, 128>;
   using warp_tile = ck_tile::sequence<16, 16, 32>;
-  using gemm_warps     = ck_tile::sequence<1, 1, 1>;
+  using gemm_warps = ck_tile::sequence<1, 1, 1>;
 
-  using shape = ck_tile::TileFmhaShape<block_tile,
-                                    gemm_warps,
-                                    warp_tile,
-                                    gemm_warps,
-                                    warp_tile,
-                                    true // IsVLayoutRowMajor
-                                    >;
+  using shape = ck_tile::TileFmhaShape<
+      block_tile,
+      gemm_warps,
+      warp_tile,
+      gemm_warps,
+      warp_tile,
+      true // IsVLayoutRowMajor
+      >;
 };
 
 #endif
