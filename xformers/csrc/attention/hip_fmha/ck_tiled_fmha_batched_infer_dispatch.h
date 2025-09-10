@@ -83,19 +83,23 @@ struct batched_infer_mask_bias_dropout_dispatch {
       FmhaTraits>;
 
   template <typename FmhaTraits, typename FmhaMask>
-  using FmhaPipelineProblemQRAsyncTrloadTemp = ck_tile::BlockFmhaFwdV3PipelineProblem<
+  using FmhaPipelineProblemQRAsyncTrloadTemp = ck_tile::BlockFmhaPipelineProblem<
       typename FmhaFwdTypeConfig<ScalarType>::QDataType,
       typename FmhaFwdTypeConfig<ScalarType>::KDataType,
       typename FmhaFwdTypeConfig<ScalarType>::VDataType,
       typename FmhaFwdTypeConfig<ScalarType>::SaccDataType,
       typename FmhaFwdTypeConfig<ScalarType>::SMPLComputeDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::BiasDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::RandValOutputDataType,
       typename FmhaFwdTypeConfig<ScalarType>::LSEDataType,
       typename FmhaFwdTypeConfig<ScalarType>::PDataType,
       typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
       typename FmhaFwdTypeConfig<ScalarType>::ODataType,
       FmhaQRAsyncTrloadShape,
       false, // kIsGroupMode
+      AttentionVariant<FmhaTraits>,
       FmhaMask,
+      false, // kUseTrLoad
       FmhaTraits>;
 #endif
 
