@@ -335,7 +335,7 @@ class FwOp(AttentionFwOpBase):
 
     @classmethod
     def get_split_k(
-        cls, B: int, G: int, H: int, Mk: int, Mq: int, page_size: int, is_paged=False
+        cls, B: int, G: int, H: int, Mk: int, Mq: int, page_size: int, is_paged=False, is_fp8 = False,
     ) -> int:
         """Heuristic for the number of splits"""
         bh = max(B * H, 1)  # NOTE: Handle B*h=0 case
@@ -352,7 +352,7 @@ class FwOp(AttentionFwOpBase):
             split_size = (Mk + split_k - 1) // max(split_k, 1)
 
             chunk_size = split_size // max_chunk_size * max_chunk_size
-            if chunk_size < split_size:
+            if chunk_size < split_size and (not is_fp8):
                 split_k += 1
 
             split_k_upper_bound = 512
@@ -779,8 +779,9 @@ class FwOp(AttentionFwOpBase):
             split_k = cls.SPLIT_K
         else:
             # Use heuristics
+            use_fp8_path = k_fp8_scale_shift is not None
             split_k = (
-                cls.get_split_k(B, G, H, Mk, Mq, page_size, is_paged)
+                cls.get_split_k(B, G, H, Mk, Mq, page_size, is_paged, use_fp8_path)
                 if attn_bias_tensor is None
                 else 1
             )
