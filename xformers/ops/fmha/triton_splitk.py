@@ -532,7 +532,7 @@ class FwOp(AttentionFwOpBase):
                             num_warps = 1
                             num_stages = 1
                 elif B <= 128 and use_fp8_path:
-                    num_stages = 1
+                    num_stages = 2
                     if is_paged:
                         if mkv <= 256:
                             num_warps = 4
