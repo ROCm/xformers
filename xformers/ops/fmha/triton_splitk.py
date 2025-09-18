@@ -5,6 +5,7 @@
 
 import functools
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -247,6 +248,19 @@ class FwOp(AttentionFwOpBase):
     # On AMD or for M > 1 different NUM_STAGES and NUM_WARPS can be used.
     NUM_STAGES: int = 1
     NUM_WARPS: int = 2
+    FORCED_CONFIG: Optional[Any] = None
+
+    @classmethod
+    @contextmanager
+    def force_kernel_config(cls, config: Optional[Any]):
+        """Temporarily override the Triton launch configuration used by the forward kernel."""
+
+        previous = cls.FORCED_CONFIG
+        cls.FORCED_CONFIG = config
+        try:
+            yield
+        finally:
+            cls.FORCED_CONFIG = previous
 
     @classmethod
     def shape_not_supported_reasons(
@@ -425,6 +439,23 @@ class FwOp(AttentionFwOpBase):
         attn_bias: Any,
         k_fp8_scale_shift: Any,
     ) -> Dict[str, Any]:
+        forced_config = cls.FORCED_CONFIG
+        if forced_config is not None:
+            return {
+                "BLOCK_M": forced_config.kwargs["BLOCK_M"],
+                "BLOCK_N": forced_config.kwargs["BLOCK_N"],
+                "num_warps": forced_config.num_warps,
+                "num_stages": forced_config.num_stages,
+            }
+
+        if torch.version.hip and k_fp8_scale_shift is not None:
+            return {
+                "BLOCK_M": 16,
+                "BLOCK_N": 64,
+                "num_warps": 1,
+                "num_stages": 2,
+            }
+
         BLOCK_M = cls.BLOCK_M
         BLOCK_N = cls.BLOCK_N
         if cls.AUTOTUNE:
