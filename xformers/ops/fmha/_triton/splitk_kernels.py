@@ -387,13 +387,6 @@ def _fwd_kernel_splitK(
     # https://github.com/triton-lang/triton/issues/5466
     log2e = tl.full((), 1.44269504, tl.float32)
     qk_scale = sm_scale * log2e
-    # load q: it will stay in SRAM throughout
-    q: "VAR_ARGS_ARRAY"  # noqa: F821
-    for i in range(len(acc)):  # noqa: F821
-        q[i] = tl.load(  # noqa: F821
-            tl.advance(Q_block_ptr, (0, i * D_PER_GROUP)), boundary_check=(0,)
-        )
-
     if IS_CAUSAL or IS_LOCAL:
         # Why does the masking conditon below work as a causal mask?
         # Assuming num_queries <= BLOCK_M:
@@ -481,14 +474,14 @@ def _fwd_kernel_splitK(
                 V_scale_shift_block_ptr = None
             logical_block_idx += 1
 
-        k: "VAR_ARGS_ARRAY"  # noqa: F821
-        v: "VAR_ARGS_ARRAY"  # noqa: F821
+        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         for i in range(len(acc)):  # noqa: F821
-            k[i], v[i] = load_dequantize_k_v_group(  # noqa: F821
+            q_i = tl.load(  # noqa: F821
+                tl.advance(Q_block_ptr, (0, i * D_PER_GROUP)), boundary_check=(0,)
+            )
+            k_i = load_dequantize_k_group(  # noqa: F821
                 K_block_ptr,
-                V_block_ptr,
                 K_scale_shift_block_ptr,
-                V_scale_shift_block_ptr,
                 BOUNDS_CHECKS_N,
                 PACKED_PER_VAL,
                 PACKED_D_PER_GROUP,
@@ -497,11 +490,7 @@ def _fwd_kernel_splitK(
                 i,
                 IS_HIP,
             )
-
-        # -- compute qk ---
-        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        for i in range(len(acc)):  # noqa: F821
-            qk += tl.dot(q[i], k[i])  # noqa: F821
+            qk += tl.dot(q_i, k_i)  # noqa: F821
         qk *= qk_scale
 
         if start_n == lo and ignore_in_first_block > 0:
@@ -553,10 +542,20 @@ def _fwd_kernel_splitK(
         m_i = m_i_new
         p = p.to(Q.dtype.element_ty)
 
-        # -- scale and update acc --
+        alpha_tile = alpha[:, None]
         for i in range(len(acc)):  # noqa: F821
-            acc[i] *= alpha[:, None]  # noqa: F821
-            acc[i] += tl.dot(p, v[i])  # noqa: F821
+            v_i = load_dequantize_v_group(  # noqa: F821
+                V_block_ptr,
+                V_scale_shift_block_ptr,
+                BOUNDS_CHECKS_N,
+                PACKED_PER_VAL,
+                PACKED_D_PER_GROUP,
+                FP8_QUANTIZED,
+                Q.dtype.element_ty,
+                i,
+                IS_HIP,
+            )
+            acc[i] = acc[i] * alpha_tile + tl.dot(p, v_i)  # noqa: F821
 
         if not PAGE_SIZE:
             # update pointers
@@ -808,6 +807,96 @@ def load_dequantize_k_v_group(
 
 
 @triton.jit
+def load_dequantize_k_group(
+    K_block_ptr,
+    K_scale_shift_block_ptr,
+    BOUNDS_CHECKS_N: tl.constexpr,
+    PACKED_PER_VAL: tl.constexpr,
+    PACKED_D_PER_GROUP: tl.constexpr,
+    FP8_QUANTIZED: tl.constexpr,
+    dtype: tl.constexpr,
+    group_id: tl.constexpr,
+    IS_HIP: tl.constexpr,
+):
+    K_group_ptr = tl.advance(K_block_ptr, (PACKED_D_PER_GROUP * group_id, 0))
+    k = tl.load(K_group_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ())
+
+    if FP8_QUANTIZED:
+        k_scale_shift = tl.load(
+            K_scale_shift_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            k_scale, k_shift = cast_uint32_to_float(k_scale_shift)
+            k = dequantize_k_hip(k, k_scale, k_shift, PACKED_PER_VAL).to(dtype)
+        else:
+            k_scale, k_shift = cast_uint32_to_half2(k_scale_shift)
+            k_t = dequantize(
+                tl.trans(k),
+                tl.trans(k_scale),
+                tl.trans(k_shift),
+                PACKED_PER_VAL,
+                IS_HIP,
+            ).to(dtype)
+            k = tl.trans(k_t)
+    elif PACKED_PER_VAL > 1:
+        k_scale_shift_ptr = tl.advance(K_scale_shift_block_ptr, (group_id, 0))
+        k_scale_shift = tl.load(
+            k_scale_shift_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            k_scale, k_shift = cast_uint32_to_float(k_scale_shift)
+            k = dequantize_k_hip(k, k_scale, k_shift, PACKED_PER_VAL).to(dtype)
+        else:
+            k_scale, k_shift = cast_uint32_to_half2(k_scale_shift)
+            k_t = dequantize(
+                tl.trans(k),
+                tl.trans(k_scale),
+                tl.trans(k_shift),
+                PACKED_PER_VAL,
+                IS_HIP,
+            ).to(dtype)
+            k = tl.trans(k_t)
+    return k
+
+
+@triton.jit
+def load_dequantize_v_group(
+    V_block_ptr,
+    V_scale_shift_block_ptr,
+    BOUNDS_CHECKS_N: tl.constexpr,
+    PACKED_PER_VAL: tl.constexpr,
+    PACKED_D_PER_GROUP: tl.constexpr,
+    FP8_QUANTIZED: tl.constexpr,
+    dtype: tl.constexpr,
+    group_id: tl.constexpr,
+    IS_HIP: tl.constexpr,
+):
+    V_group_ptr = tl.advance(V_block_ptr, (0, PACKED_D_PER_GROUP * group_id))
+    v = tl.load(V_group_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ())
+
+    if FP8_QUANTIZED:
+        v_scale_shift = tl.load(
+            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            v_scale, v_shift = cast_uint32_to_float(v_scale_shift)
+        else:
+            v_scale, v_shift = cast_uint32_to_half2(v_scale_shift)
+        v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
+    elif PACKED_PER_VAL > 1:
+        v_scale_shift_ptr = tl.advance(V_scale_shift_block_ptr, (0, group_id))
+        v_scale_shift = tl.load(
+            v_scale_shift_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            v_scale, v_shift = cast_uint32_to_float(v_scale_shift)
+        else:
+            v_scale, v_shift = cast_uint32_to_half2(v_scale_shift)
+        v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
+    return v
+
+
+@triton.jit
 def cast_uint32_to_half2(scale_shift):
     """Extract two float16 packed into one int32"""
     scale = scale_shift & 0xFFFF
@@ -900,8 +989,21 @@ def dequantize(
         quant_offset, (BLOCK_N, BLOCK_DMODEL_PACKED * PACKED_PER_VAL)
     )
     if PACKED_PER_VAL == 4:
+        if IS_HIP:
+            # Reuse the HIP-specific FP8 routine that keeps the unpacked tile transient.
+            dequant = dequantize_k_hip(
+                tl.trans(x_), tl.trans(scale), tl.trans(shift), PACKED_PER_VAL
+            )
+            return tl.trans(dequant)
         # FP8 quantization.
-        fp8_type = tl.float8e5 if torch.version.hip is not None else tl.float8e4nv
+        fp8_type = (
+            tl.float8e4b8
+            if (
+                torch.version.hip is not None
+                and triton.runtime.driver.active.get_current_target().arch == "gfx942"
+            )
+            else tl.float8e4nv
+        )
         dequant = (
             quant_offset.to(tl.uint8).to(fp8_type, bitcast=True).to(scale.dtype) * scale
             + shift
