@@ -173,7 +173,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
                 false, // kStoreLSE
                 kHasDropout,
                 false, // kDoFp8StaticQuant place-holder
-                occupancy
+                1 // Occupancy place-holder
                 >;
             using FmhaPipelineProblem =
                 FmhaPipelineProblemQRAsyncTrloadTemp<FmhaTraits, FmhaMask>;
@@ -362,9 +362,9 @@ struct grouped_infer_mask_bias_dropout_dispatch {
     /// maximizes the kernel's performance.
     int remap_opt = 2;
     if(!param.custom_mask_type &&
-       ((param.Hq % 8 != 0) || (param.max_seqlen_q > 16384)))
+       ((param.Hq % 8 != 0) || (param.M > 16384)))
     {
-        if(param.max_seqlen_q >= 65536)
+        if(param.M >= 65536)
         {
             remap_opt = 0;
         }

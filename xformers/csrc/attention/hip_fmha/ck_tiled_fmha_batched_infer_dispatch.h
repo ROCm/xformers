@@ -173,7 +173,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
                 false, // kStoreLSE
                 kHasDropout,
                 false, // kDoFp8StaticQuant place-holder
-                occupancy
+                1 // Occupancy place-holder
                 >;
             using FmhaPipelineProblem =
                 FmhaPipelineProblemQRAsyncTrloadTemp<FmhaTraits, FmhaMask>;

@@ -193,9 +193,9 @@ struct FmhaFwdSpecificShapeForV3 {
 };
 
 struct FmhaFwdSpecificShapeForQRAsyncTrload {
-  using block_tile = ck_tile::sequence<32, 32, 128, 128, 32, 128>;
+  using block_tile = ck_tile::sequence<64, 128, 32, 128, 32, 128>;
   using warp_tile = ck_tile::sequence<16, 16, 32>;
-  using gemm_warps = ck_tile::sequence<1, 1, 1>;
+  using gemm_warps = ck_tile::sequence<4, 1, 1>;
 
   using shape = ck_tile::TileFmhaShape<
       block_tile,
