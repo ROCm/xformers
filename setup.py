@@ -616,7 +616,7 @@ def get_extensions():
 
         extra_compile_args["nvcc"] = [
             "-O3",
-            "-std=c++17",
+            "-std=c++20",
             f"--offload-arch={arch}",
             *offload_compress_flag,
             "-U__CUDA_NO_HALF_OPERATORS__",

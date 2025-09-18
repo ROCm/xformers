@@ -206,7 +206,6 @@ struct FmhaFwdSpecificShapeForQRAsyncTrload {
       true // IsVLayoutRowMajor
       >;
 };
-
 #endif
 
 static int get_fmha_fwd_mtile(
