@@ -645,13 +645,19 @@ def autotune_kernel(kernel: Callable):
     STAGES_VALUES = [1, 2] if torch.version.hip else [1, 2, 3]
     WARPS_VALUES = [1, 2, 4, 8]
 
+    def _is_valid_for_hip(block_m: int, block_n: int, warps: int) -> bool:
+        if not torch.version.hip:
+            return True
+        # Keep HIP configs under tight resource budgets to avoid >128 VGPR usage.
+        return block_m <= 64 and block_n <= 64 and warps <= 4
+
     TRITON_CONFIGS = [
         gen_config(block_m, block_n, stages, warps)
         for block_m in BLOCK_M_VALUES
         for block_n in BLOCK_N_VALUES
         for stages in STAGES_VALUES
         for warps in WARPS_VALUES
-        if block_n >= block_m
+        if block_n >= block_m and _is_valid_for_hip(block_m, block_n, warps)
     ]
 
     kernel = triton.autotune(
