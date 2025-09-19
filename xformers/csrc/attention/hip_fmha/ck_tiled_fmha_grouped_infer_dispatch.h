@@ -388,17 +388,17 @@ struct grouped_infer_mask_bias_dropout_dispatch {
           param.Hq, // nhead_q
           param.Hq / param.Hkv, // nhead_ratio_qk
           param.scale,
-          param.q_strides[1], // q, k, v, out tensor seq-dim
+          param.q_strides[0], // q, k, v, out tensor seq-dim
                               // stride
+          param.k_strides[0],
+          param.v_strides[0],
+          param.out_strides[0],
+          param.q_strides[1], // q, k, v, lse, out tensor
+                              // head-dim stride
           param.k_strides[1],
           param.v_strides[1],
-          param.out_strides[1],
-          param.q_strides[2], // q, k, v, lse, out tensor
-                              // head-dim stride
-          param.k_strides[2],
-          param.v_strides[2],
           0, // nhead_stride_lse
-          param.out_strides[2],
+          param.out_strides[1],
           (param.window_size > 0) ? param.window_size - 1
                                   : -1, // window_left_size
           (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
