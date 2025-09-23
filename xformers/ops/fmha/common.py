@@ -238,14 +238,14 @@ class Inputs:
 
         quantized_dtypes = self.key.dtype == self.value.dtype == torch.int32
         non_quantized_dtypes = all(x.dtype == self.query.dtype for x in qkv)
-        if not (quantized_dtypes or non_quantized_dtypes):
-            raise ValueError(
-                "Query/Key/Value should either all have the same dtype, or "
-                "(in the quantized case) Key/Value should have dtype torch.int32\n"
-                f"  query.dtype: {self.query.dtype}\n"
-                f"  key.dtype  : {self.key.dtype}\n"
-                f"  value.dtype: {self.value.dtype}"
-            )
+        # if not (quantized_dtypes or non_quantized_dtypes):
+        #     raise ValueError(
+        #         "Query/Key/Value should either all have the same dtype, or "
+        #         "(in the quantized case) Key/Value should have dtype torch.int32\n"
+        #         f"  query.dtype: {self.query.dtype}\n"
+        #         f"  key.dtype  : {self.key.dtype}\n"
+        #         f"  value.dtype: {self.value.dtype}"
+        #     )
         # Biases with tensors attached are meant to be in BMHK format
         # This would require to permute biases/gradients which can be expensive,
         # so let's just forbid it - BMK is a legacy format anyway

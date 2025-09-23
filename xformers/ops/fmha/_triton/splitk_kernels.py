@@ -102,6 +102,7 @@ def _fwd_kernel_splitK(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     IS_SPLITK: tl.constexpr,
+    IS_FP8_PACKED: tl.constexpr,
     SPLIT_K_EARLY_EXIT: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
@@ -141,7 +142,6 @@ def _fwd_kernel_splitK(
     tl.assume(stride_lsek_h > 0)
     tl.assume(stride_lsek_s > 0)
     tl.assume(stride_lsek_m > 0)
-
     """This kernel can accept non-quantized or int4-quantized keys/values.
     PACKED_PER_VAL determines the quantization type:
         - PACKED_PER_VAL == 1 means no quantization
@@ -310,7 +310,7 @@ def _fwd_kernel_splitK(
                 block_shape=(BLOCK_N, 1),
                 order=(1, 0),
             )
-        elif FP8_QUANTIZED:
+        elif FP8_QUANTIZED and IS_FP8_PACKED:
             if Seq_starts_k is not None:
                 k_fp8_scale_shift_base += start_kv_idx * stride_k_fp8_scale_shift_n
                 v_fp8_scale_shift_base += start_kv_idx * stride_v_fp8_scale_shift_n
@@ -331,6 +331,30 @@ def _fwd_kernel_splitK(
                 strides=(stride_v_fp8_scale_shift_n, 1),
                 offsets=(lo, 0),
                 block_shape=(BLOCK_N, 1),
+                order=(1, 0),
+            )
+        # use fp8 data type as input directly
+        elif FP8_QUANTIZED:
+            if Seq_starts_k is not None:
+                k_fp8_scale_shift_base += start_kv_idx * stride_k_fp8_scale_shift_n
+                v_fp8_scale_shift_base += start_kv_idx * stride_v_fp8_scale_shift_n
+            else:
+                k_fp8_scale_shift_base += off_z * stride_k_fp8_scale_shift_z
+                v_fp8_scale_shift_base += off_z * stride_v_fp8_scale_shift_z
+            K_scale_shift_block_ptr = tl.make_block_ptr(
+                base=k_fp8_scale_shift_base,
+                shape=(hi, 2),
+                strides=(stride_k_fp8_scale_shift_n, 1),
+                offsets=(lo, 0),
+                block_shape=(BLOCK_N, 2),
+                order=(1, 0),
+            )
+            V_scale_shift_block_ptr = tl.make_block_ptr(
+                base=v_fp8_scale_shift_base,
+                shape=(hi, 2),
+                strides=(stride_v_fp8_scale_shift_n, 1),
+                offsets=(lo, 0),
+                block_shape=(BLOCK_N, 2),
                 order=(1, 0),
             )
         else:
@@ -459,7 +483,7 @@ def _fwd_kernel_splitK(
                     block_shape=(BLOCK_N, 1),
                     order=(1, 0),
                 )
-            elif FP8_QUANTIZED:
+            elif FP8_QUANTIZED and IS_FP8_PACKED:
                 K_scale_shift_block_ptr = tl.make_block_ptr(
                     base=k_fp8_scale_shift_base,
                     shape=(1, offset + current_block_size),
@@ -474,6 +498,24 @@ def _fwd_kernel_splitK(
                     strides=(stride_v_fp8_scale_shift_n, 1),
                     offsets=(offset, 0),
                     block_shape=(BLOCK_N, 1),
+                    order=(1, 0),
+                )
+            # use fp8 directly as input
+            elif FP8_QUANTIZED:
+                K_scale_shift_block_ptr = tl.make_block_ptr(
+                    base=k_fp8_scale_shift_base,
+                    shape=(offset + current_block_size, 2),
+                    strides=(stride_k_fp8_scale_shift_n, 1),
+                    offsets=(offset, 0),
+                    block_shape=(BLOCK_N, 2),
+                    order=(1, 0),
+                )
+                V_scale_shift_block_ptr = tl.make_block_ptr(
+                    base=v_fp8_scale_shift_base,
+                    shape=(offset + current_block_size, 2),
+                    strides=(stride_v_fp8_scale_shift_n, 1),
+                    offsets=(offset, 0),
+                    block_shape=(BLOCK_N, 2),
                     order=(1, 0),
                 )
             else:
@@ -493,6 +535,7 @@ def _fwd_kernel_splitK(
                 PACKED_PER_VAL,
                 PACKED_D_PER_GROUP,
                 FP8_QUANTIZED,
+                IS_FP8_PACKED,
                 Q.dtype.element_ty,
                 i,
                 IS_HIP,
@@ -562,7 +605,7 @@ def _fwd_kernel_splitK(
             # update pointers
             K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
             V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
-            if PACKED_PER_VAL > 1:
+            if PACKED_PER_VAL > 1 or (FP8_QUANTIZED and (not IS_FP8_PACKED)):
                 K_scale_shift_block_ptr = tl.advance(
                     K_scale_shift_block_ptr, (0, BLOCK_N)
                 )
@@ -732,6 +775,7 @@ def load_dequantize_k_v_group(
     PACKED_PER_VAL: tl.constexpr,
     PACKED_D_PER_GROUP: tl.constexpr,
     FP8_QUANTIZED: tl.constexpr,
+    IS_FP8_PACKED: tl.constexpr,
     dtype: tl.constexpr,
     group_id: tl.constexpr,
     IS_HIP: tl.constexpr,
@@ -748,7 +792,7 @@ def load_dequantize_k_v_group(
     v = tl.load(V_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ())
 
     # If K/V are quantized, load quantization coefficients and dequantize.
-    if FP8_QUANTIZED:
+    if FP8_QUANTIZED and IS_FP8_PACKED:
         v_scale_shift = tl.load(
             V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
         )
@@ -776,6 +820,20 @@ def load_dequantize_k_v_group(
                 IS_HIP,
             ).to(dtype)
             k = tl.trans(k_t)
+    elif FP8_QUANTIZED:
+        k_scale_shift = tl.load(
+            K_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        k_scale, k_shift = k_scale_shift.to(tl.float32).split()
+        k = k.to(tl.float32) * k_scale + k_shift
+        k = k.to(dtype)
+
+        v_scale_shift = tl.load(
+            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        v_scale, v_shift = v_scale_shift.to(tl.float32).split()
+        v = v.to(tl.float32) * v_scale[:, None] + v_shift[:, None]
+        v = v.to(dtype)
     elif PACKED_PER_VAL > 1:
         # Int4 quantization.
         K_scale_shift_block_ptr = tl.advance(K_scale_shift_block_ptr, (group_id, 0))
@@ -816,6 +874,15 @@ def cast_uint32_to_half2(scale_shift):
     shift = shift.to(tl.uint16).to(tl.float16, bitcast=True)
     return scale, shift
 
+@triton.jit
+def cast_uint32_to_float(scale_shift):
+    """Extract two float16 packed into one int32"""
+    scale = scale_shift & 0xFFFF
+    shift = scale_shift >> 16
+    scale = scale.to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    shift = shift.to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    return scale, shift
+
 
 @triton.jit
 def cast_uint32_to_float(scale_shift):
@@ -853,7 +920,7 @@ def dequantize_k_hip(
 
     if PACKED_PER_VAL == 4:
         # FP8 quantization.
-        fp8_type = tl.float8e5 if torch.version.hip is not None else tl.float8e4nv
+        fp8_type = tl.float8e4b8 if (torch.version.hip is not None and triton.runtime.driver.active.get_current_target().arch == 'gfx942') else tl.float8e4nv
         dequant = (
             quant_offset.to(tl.uint8).to(fp8_type, bitcast=True).to(scale.dtype) * scale
             + shift
@@ -901,7 +968,7 @@ def dequantize(
     )
     if PACKED_PER_VAL == 4:
         # FP8 quantization.
-        fp8_type = tl.float8e5 if torch.version.hip is not None else tl.float8e4nv
+        fp8_type = tl.float8e4b8 if (torch.version.hip is not None and triton.runtime.driver.active.get_current_target().arch == 'gfx942') else tl.float8e4nv
         dequant = (
             quant_offset.to(tl.uint8).to(fp8_type, bitcast=True).to(scale.dtype) * scale
             + shift

@@ -402,14 +402,23 @@ class FwOp(AttentionFwOpBase):
         v_fp8_scale_shift = inp_.v_fp8_scale_shift
         assert k_fp8_scale_shift is not None
         assert v_fp8_scale_shift is not None
-        if k_fp8_scale_shift.ndim == 3:
-            return k_fp8_scale_shift.unsqueeze(2), v_fp8_scale_shift.unsqueeze(2)
-        if k_fp8_scale_shift.ndim == 4:
+
+        if k_fp8_scale_shift.dtype == torch.int32:
+            if k_fp8_scale_shift.ndim == 3:
+                return k_fp8_scale_shift.unsqueeze(2), v_fp8_scale_shift.unsqueeze(2)
+            if k_fp8_scale_shift.ndim == 4:
+                return k_fp8_scale_shift, v_fp8_scale_shift
+            raise ValueError(
+                "FP8 scales have to be provided in BMH or BMGH format, "
+                f"but got {k_fp8_scale_shift.shape=}"
+            )
+        elif k_fp8_scale_shift.dtype == torch.float16:
             return k_fp8_scale_shift, v_fp8_scale_shift
-        raise ValueError(
-            "FP8 scales have to be provided in BMH or BMGH format, "
-            f"but got {k_fp8_scale_shift.shape=}"
-        )
+        else:
+            raise ValueError(
+                "FP8 scales needs to be either data type fp16 or int32 (packed)"
+            )
+
 
     @classmethod
     def get_extra_args(
@@ -634,6 +643,7 @@ class FwOp(AttentionFwOpBase):
             return out, None
 
         k_fp8_scale_shift, v_fp8_scale_shift = cls.get_fp8_scale_shift(inp)
+        IS_FP8_PACKED = (k_fp8_scale_shift is not None) and (k_fp8_scale_shift.dtype == torch.int32)
 
         if not isinstance(inp.attn_bias, torch.Tensor):
             attn_bias_tensor = None
@@ -714,6 +724,12 @@ class FwOp(AttentionFwOpBase):
             NUM_QUERIES_CAUSAL = Mq
         else:
             B, Mq, G, Hq, Kq = q.shape
+            if k_fp8_scale_shift.dtype == torch.float16:
+                Kkv = v.shape[-1]
+                kv_shape = (1 if is_paged or is_gappy else B, -1, G, Hq, Kkv)
+                k_fp8_scale_shift = k_fp8_scale_shift.view(kv_shape[:-1])
+                v_fp8_scale_shift = v_fp8_scale_shift.view(kv_shape[:-1])
+
 
         if attn_bias_tensor is not None and attn_bias_tensor.ndim == 4:
             # (B, H, Mq, Mkv) -> (B, G, H, Mq, Mkv)
@@ -838,6 +854,7 @@ class FwOp(AttentionFwOpBase):
             return triton.cdiv(M, META["BLOCK_M"]), B * G * H, split_k
 
         split_size = (Mk + split_k - 1) // split_k
+
         use_seq_len = seq_len is not None
 
         kernel = cls.get_kernel()
@@ -920,6 +937,7 @@ class FwOp(AttentionFwOpBase):
             IS_LOCAL=IS_LOCAL,
             NUM_QUERIES_CAUSAL=NUM_QUERIES_CAUSAL,
             IS_SPLITK=IS_SPLITK,
+            IS_FP8_PACKED = IS_FP8_PACKED,
             SPLIT_K_EARLY_EXIT=cls.SPLIT_K_EARLY_EXIT,
             USE_PAGED_ATTENTION=is_paged,
             PAGE_SIZE=page_size,
