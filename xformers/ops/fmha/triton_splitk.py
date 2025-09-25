@@ -608,7 +608,7 @@ class FwOp(AttentionFwOpBase):
                 "BLOCK_N": BLOCK_N,
                 "num_warps": num_warps,
                 "num_stages": num_stages,
-                "schedule_hint": "iterative-ilp-scheduler",                
+                "schedule_hint": "iterative-ilp-scheduler",
             }
         return extra_args
 
