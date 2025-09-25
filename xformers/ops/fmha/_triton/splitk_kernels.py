@@ -102,7 +102,6 @@ def _fwd_kernel_splitK(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     IS_SPLITK: tl.constexpr,
-    IS_FP8_PACKED: tl.constexpr,
     SPLIT_K_EARLY_EXIT: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     IS_LOCAL: tl.constexpr,
@@ -116,32 +115,6 @@ def _fwd_kernel_splitK(
     NUM_PROGRAMS_DIM2_CONST: tl.constexpr,
     IS_HIP: tl.constexpr,
 ):
-    tl.assume(stride_qz > 0)
-    tl.assume(stride_qm > 0)
-    tl.assume(stride_qg > 0)
-    tl.assume(stride_qh > 0)
-    tl.assume(stride_qk > 0)
-    tl.assume(stride_kz > 0)
-    tl.assume(stride_kn > 0)
-    tl.assume(stride_kg > 0)
-    tl.assume(stride_kh > 0)
-    tl.assume(stride_kk > 0)
-    tl.assume(stride_vz > 0)
-    tl.assume(stride_vn > 0)
-    tl.assume(stride_vg > 0)
-    tl.assume(stride_vh > 0)
-    tl.assume(stride_vk > 0)
-    tl.assume(stride_osk_z > 0)
-    tl.assume(stride_osk_g > 0)
-    tl.assume(stride_osk_h > 0)
-    tl.assume(stride_osk_s > 0)
-    tl.assume(stride_osk_m > 0)
-    tl.assume(stride_osk_k > 0)
-    tl.assume(stride_lsek_z > 0)
-    tl.assume(stride_lsek_g > 0)
-    tl.assume(stride_lsek_h > 0)
-    tl.assume(stride_lsek_s > 0)
-    tl.assume(stride_lsek_m > 0)
     """This kernel can accept non-quantized or int4-quantized keys/values.
     PACKED_PER_VAL determines the quantization type:
         - PACKED_PER_VAL == 1 means no quantization
@@ -310,7 +283,7 @@ def _fwd_kernel_splitK(
                 block_shape=(BLOCK_N, 1),
                 order=(1, 0),
             )
-        elif FP8_QUANTIZED and IS_FP8_PACKED:
+        elif FP8_QUANTIZED:
             if Seq_starts_k is not None:
                 k_fp8_scale_shift_base += start_kv_idx * stride_k_fp8_scale_shift_n
                 v_fp8_scale_shift_base += start_kv_idx * stride_v_fp8_scale_shift_n
@@ -331,30 +304,6 @@ def _fwd_kernel_splitK(
                 strides=(stride_v_fp8_scale_shift_n, 1),
                 offsets=(lo, 0),
                 block_shape=(BLOCK_N, 1),
-                order=(1, 0),
-            )
-        # use fp8 data type as input directly
-        elif FP8_QUANTIZED:
-            if Seq_starts_k is not None:
-                k_fp8_scale_shift_base += start_kv_idx * stride_k_fp8_scale_shift_n
-                v_fp8_scale_shift_base += start_kv_idx * stride_v_fp8_scale_shift_n
-            else:
-                k_fp8_scale_shift_base += off_z * stride_k_fp8_scale_shift_z
-                v_fp8_scale_shift_base += off_z * stride_v_fp8_scale_shift_z
-            K_scale_shift_block_ptr = tl.make_block_ptr(
-                base=k_fp8_scale_shift_base,
-                shape=(hi, 2),
-                strides=(stride_k_fp8_scale_shift_n, 1),
-                offsets=(lo, 0),
-                block_shape=(BLOCK_N, 2),
-                order=(1, 0),
-            )
-            V_scale_shift_block_ptr = tl.make_block_ptr(
-                base=v_fp8_scale_shift_base,
-                shape=(hi, 2),
-                strides=(stride_v_fp8_scale_shift_n, 1),
-                offsets=(lo, 0),
-                block_shape=(BLOCK_N, 2),
                 order=(1, 0),
             )
         else:
@@ -411,13 +360,6 @@ def _fwd_kernel_splitK(
     # https://github.com/triton-lang/triton/issues/5466
     log2e = tl.full((), 1.44269504, tl.float32)
     qk_scale = sm_scale * log2e
-    # load q: it will stay in SRAM throughout
-    q: "VAR_ARGS_ARRAY"  # noqa: F821
-    for i in range(len(acc)):  # noqa: F821
-        q[i] = tl.load(  # noqa: F821
-            tl.advance(Q_block_ptr, (0, i * D_PER_GROUP)), boundary_check=(0,)
-        )
-
     if IS_CAUSAL or IS_LOCAL:
         # Why does the masking conditon below work as a causal mask?
         # Assuming num_queries <= BLOCK_M:
@@ -483,7 +425,7 @@ def _fwd_kernel_splitK(
                     block_shape=(BLOCK_N, 1),
                     order=(1, 0),
                 )
-            elif FP8_QUANTIZED and IS_FP8_PACKED:
+            elif FP8_QUANTIZED:
                 K_scale_shift_block_ptr = tl.make_block_ptr(
                     base=k_fp8_scale_shift_base,
                     shape=(1, offset + current_block_size),
@@ -500,51 +442,28 @@ def _fwd_kernel_splitK(
                     block_shape=(BLOCK_N, 1),
                     order=(1, 0),
                 )
-            # use fp8 directly as input
-            elif FP8_QUANTIZED:
-                K_scale_shift_block_ptr = tl.make_block_ptr(
-                    base=k_fp8_scale_shift_base,
-                    shape=(offset + current_block_size, 2),
-                    strides=(stride_k_fp8_scale_shift_n, 1),
-                    offsets=(offset, 0),
-                    block_shape=(BLOCK_N, 2),
-                    order=(1, 0),
-                )
-                V_scale_shift_block_ptr = tl.make_block_ptr(
-                    base=v_fp8_scale_shift_base,
-                    shape=(offset + current_block_size, 2),
-                    strides=(stride_v_fp8_scale_shift_n, 1),
-                    offsets=(offset, 0),
-                    block_shape=(BLOCK_N, 2),
-                    order=(1, 0),
-                )
             else:
                 K_scale_shift_block_ptr = None
                 V_scale_shift_block_ptr = None
             logical_block_idx += 1
 
-        k: "VAR_ARGS_ARRAY"  # noqa: F821
-        v: "VAR_ARGS_ARRAY"  # noqa: F821
+        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         for i in range(len(acc)):  # noqa: F821
-            k[i], v[i] = load_dequantize_k_v_group(  # noqa: F821
+            q_i = tl.load(  # noqa: F821
+                tl.advance(Q_block_ptr, (0, i * D_PER_GROUP)), boundary_check=(0,)
+            )
+            k_i = load_dequantize_k_group(  # noqa: F821
                 K_block_ptr,
-                V_block_ptr,
                 K_scale_shift_block_ptr,
-                V_scale_shift_block_ptr,
                 BOUNDS_CHECKS_N,
                 PACKED_PER_VAL,
                 PACKED_D_PER_GROUP,
                 FP8_QUANTIZED,
-                IS_FP8_PACKED,
                 Q.dtype.element_ty,
                 i,
                 IS_HIP,
             )
-
-        # -- compute qk ---
-        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        for i in range(len(acc)):  # noqa: F821
-            qk += tl.dot(q[i], k[i])  # noqa: F821
+            qk += tl.dot(q_i, k_i)  # noqa: F821
         qk *= qk_scale
 
         if start_n == lo and ignore_in_first_block > 0:
@@ -596,16 +515,26 @@ def _fwd_kernel_splitK(
         m_i = m_i_new
         p = p.to(Q.dtype.element_ty)
 
-        # -- scale and update acc --
+        alpha_tile = alpha[:, None]
         for i in range(len(acc)):  # noqa: F821
-            acc[i] *= alpha[:, None]  # noqa: F821
-            acc[i] += tl.dot(p, v[i])  # noqa: F821
+            v_i = load_dequantize_v_group(  # noqa: F821
+                V_block_ptr,
+                V_scale_shift_block_ptr,
+                BOUNDS_CHECKS_N,
+                PACKED_PER_VAL,
+                PACKED_D_PER_GROUP,
+                FP8_QUANTIZED,
+                Q.dtype.element_ty,
+                i,
+                IS_HIP,
+            )
+            acc[i] = acc[i] * alpha_tile + tl.dot(p, v_i)  # noqa: F821
 
         if not PAGE_SIZE:
             # update pointers
             K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
             V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
-            if PACKED_PER_VAL > 1 or (FP8_QUANTIZED and (not IS_FP8_PACKED)):
+            if PACKED_PER_VAL > 1:
                 K_scale_shift_block_ptr = tl.advance(
                     K_scale_shift_block_ptr, (0, BLOCK_N)
                 )
@@ -716,13 +645,19 @@ def autotune_kernel(kernel: Callable):
     STAGES_VALUES = [1, 2] if torch.version.hip else [1, 2, 3]
     WARPS_VALUES = [1, 2, 4, 8]
 
+    def _is_valid_for_hip(block_m: int, block_n: int, warps: int) -> bool:
+        if not torch.version.hip:
+            return True
+        # Keep HIP configs under tight resource budgets to avoid >128 VGPR usage.
+        return block_m <= 64 and block_n <= 64 and warps <= 4
+
     TRITON_CONFIGS = [
         gen_config(block_m, block_n, stages, warps)
         for block_m in BLOCK_M_VALUES
         for block_n in BLOCK_N_VALUES
         for stages in STAGES_VALUES
         for warps in WARPS_VALUES
-        if block_n >= block_m
+        if block_n >= block_m and _is_valid_for_hip(block_m, block_n, warps)
     ]
 
     kernel = triton.autotune(
@@ -775,7 +710,6 @@ def load_dequantize_k_v_group(
     PACKED_PER_VAL: tl.constexpr,
     PACKED_D_PER_GROUP: tl.constexpr,
     FP8_QUANTIZED: tl.constexpr,
-    IS_FP8_PACKED: tl.constexpr,
     dtype: tl.constexpr,
     group_id: tl.constexpr,
     IS_HIP: tl.constexpr,
@@ -792,7 +726,7 @@ def load_dequantize_k_v_group(
     v = tl.load(V_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ())
 
     # If K/V are quantized, load quantization coefficients and dequantize.
-    if FP8_QUANTIZED and IS_FP8_PACKED:
+    if FP8_QUANTIZED:
         v_scale_shift = tl.load(
             V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
         )
@@ -820,20 +754,6 @@ def load_dequantize_k_v_group(
                 IS_HIP,
             ).to(dtype)
             k = tl.trans(k_t)
-    elif FP8_QUANTIZED:
-        k_scale_shift = tl.load(
-            K_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
-        )
-        k_scale, k_shift = k_scale_shift.to(tl.float32).split()
-        k = k.to(tl.float32) * k_scale + k_shift
-        k = k.to(dtype)
-
-        v_scale_shift = tl.load(
-            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
-        )
-        v_scale, v_shift = v_scale_shift.to(tl.float32).split()
-        v = v.to(tl.float32) * v_scale[:, None] + v_shift[:, None]
-        v = v.to(dtype)
     elif PACKED_PER_VAL > 1:
         # Int4 quantization.
         K_scale_shift_block_ptr = tl.advance(K_scale_shift_block_ptr, (group_id, 0))
@@ -866,21 +786,102 @@ def load_dequantize_k_v_group(
 
 
 @triton.jit
+def load_dequantize_k_group(
+    K_block_ptr,
+    K_scale_shift_block_ptr,
+    BOUNDS_CHECKS_N: tl.constexpr,
+    PACKED_PER_VAL: tl.constexpr,
+    PACKED_D_PER_GROUP: tl.constexpr,
+    FP8_QUANTIZED: tl.constexpr,
+    dtype: tl.constexpr,
+    group_id: tl.constexpr,
+    IS_HIP: tl.constexpr,
+):
+    K_group_ptr = tl.advance(K_block_ptr, (PACKED_D_PER_GROUP * group_id, 0))
+    k = tl.load(K_group_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ())
+
+    if FP8_QUANTIZED:
+        k_scale_shift = tl.load(
+            K_scale_shift_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            k_scale, k_shift = cast_uint32_to_float(k_scale_shift)
+            k = dequantize_k_hip(k, k_scale, k_shift, PACKED_PER_VAL).to(dtype)
+        else:
+            k_scale, k_shift = cast_uint32_to_half2(k_scale_shift)
+            k_t = dequantize(
+                tl.trans(k),
+                tl.trans(k_scale),
+                tl.trans(k_shift),
+                PACKED_PER_VAL,
+                IS_HIP,
+            ).to(dtype)
+            k = tl.trans(k_t)
+    elif PACKED_PER_VAL > 1:
+        k_scale_shift_ptr = tl.advance(K_scale_shift_block_ptr, (group_id, 0))
+        k_scale_shift = tl.load(
+            k_scale_shift_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            k_scale, k_shift = cast_uint32_to_float(k_scale_shift)
+            k = dequantize_k_hip(k, k_scale, k_shift, PACKED_PER_VAL).to(dtype)
+        else:
+            k_scale, k_shift = cast_uint32_to_half2(k_scale_shift)
+            k_t = dequantize(
+                tl.trans(k),
+                tl.trans(k_scale),
+                tl.trans(k_shift),
+                PACKED_PER_VAL,
+                IS_HIP,
+            ).to(dtype)
+            k = tl.trans(k_t)
+    return k
+
+
+@triton.jit
+def load_dequantize_v_group(
+    V_block_ptr,
+    V_scale_shift_block_ptr,
+    BOUNDS_CHECKS_N: tl.constexpr,
+    PACKED_PER_VAL: tl.constexpr,
+    PACKED_D_PER_GROUP: tl.constexpr,
+    FP8_QUANTIZED: tl.constexpr,
+    dtype: tl.constexpr,
+    group_id: tl.constexpr,
+    IS_HIP: tl.constexpr,
+):
+    V_group_ptr = tl.advance(V_block_ptr, (0, PACKED_D_PER_GROUP * group_id))
+    v = tl.load(V_group_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ())
+
+    if FP8_QUANTIZED:
+        v_scale_shift = tl.load(
+            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            v_scale, v_shift = cast_uint32_to_float(v_scale_shift)
+        else:
+            v_scale, v_shift = cast_uint32_to_half2(v_scale_shift)
+        v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
+    elif PACKED_PER_VAL > 1:
+        v_scale_shift_ptr = tl.advance(V_scale_shift_block_ptr, (0, group_id))
+        v_scale_shift = tl.load(
+            v_scale_shift_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            v_scale, v_shift = cast_uint32_to_float(v_scale_shift)
+        else:
+            v_scale, v_shift = cast_uint32_to_half2(v_scale_shift)
+        v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
+    return v
+
+
+@triton.jit
 def cast_uint32_to_half2(scale_shift):
     """Extract two float16 packed into one int32"""
     scale = scale_shift & 0xFFFF
     shift = scale_shift >> 16
     scale = scale.to(tl.uint16).to(tl.float16, bitcast=True)
     shift = shift.to(tl.uint16).to(tl.float16, bitcast=True)
-    return scale, shift
-
-@triton.jit
-def cast_uint32_to_float(scale_shift):
-    """Extract two float16 packed into one int32"""
-    scale = scale_shift & 0xFFFF
-    shift = scale_shift >> 16
-    scale = scale.to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
-    shift = shift.to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
     return scale, shift
 
 
@@ -920,7 +921,7 @@ def dequantize_k_hip(
 
     if PACKED_PER_VAL == 4:
         # FP8 quantization.
-        fp8_type = tl.float8e4b8 if (torch.version.hip is not None and triton.runtime.driver.active.get_current_target().arch == 'gfx942') else tl.float8e4nv
+        fp8_type = tl.float8e4b8 if torch.version.hip is not None else tl.float8e4nv
         dequant = (
             quant_offset.to(tl.uint8).to(fp8_type, bitcast=True).to(scale.dtype) * scale
             + shift
@@ -967,8 +968,21 @@ def dequantize(
         quant_offset, (BLOCK_N, BLOCK_DMODEL_PACKED * PACKED_PER_VAL)
     )
     if PACKED_PER_VAL == 4:
+        if IS_HIP:
+            # Reuse the HIP-specific FP8 routine that keeps the unpacked tile transient.
+            dequant = dequantize_k_hip(
+                tl.trans(x_), tl.trans(scale), tl.trans(shift), PACKED_PER_VAL
+            )
+            return tl.trans(dequant)
         # FP8 quantization.
-        fp8_type = tl.float8e4b8 if (torch.version.hip is not None and triton.runtime.driver.active.get_current_target().arch == 'gfx942') else tl.float8e4nv
+        fp8_type = (
+            tl.float8e4b8
+            if (
+                torch.version.hip is not None
+                and triton.runtime.driver.active.get_current_target().arch == "gfx942"
+            )
+            else tl.float8e4nv
+        )
         dequant = (
             quant_offset.to(tl.uint8).to(fp8_type, bitcast=True).to(scale.dtype) * scale
             + shift

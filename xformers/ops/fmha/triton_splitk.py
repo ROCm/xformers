@@ -5,6 +5,7 @@
 
 import functools
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -247,6 +248,19 @@ class FwOp(AttentionFwOpBase):
     # On AMD or for M > 1 different NUM_STAGES and NUM_WARPS can be used.
     NUM_STAGES: int = 1
     NUM_WARPS: int = 2
+    FORCED_CONFIG: Optional[Any] = None
+
+    @classmethod
+    @contextmanager
+    def force_kernel_config(cls, config: Optional[Any]):
+        """Temporarily override the Triton launch configuration used by the forward kernel."""
+
+        previous = cls.FORCED_CONFIG
+        cls.FORCED_CONFIG = config
+        try:
+            yield
+        finally:
+            cls.FORCED_CONFIG = previous
 
     @classmethod
     def shape_not_supported_reasons(
@@ -335,7 +349,7 @@ class FwOp(AttentionFwOpBase):
 
     @classmethod
     def get_split_k(
-        cls, B: int, G: int, H: int, Mk: int, Mq: int, page_size: int, is_paged=False, is_fp8 = False,
+        cls, B: int, G: int, H: int, Mk: int, Mq: int, page_size: int, is_paged=False
     ) -> int:
         """Heuristic for the number of splits"""
         bh = max(B * H, 1)  # NOTE: Handle B*h=0 case
@@ -352,7 +366,7 @@ class FwOp(AttentionFwOpBase):
             split_size = (Mk + split_k - 1) // max(split_k, 1)
 
             chunk_size = split_size // max_chunk_size * max_chunk_size
-            if chunk_size < split_size and (not is_fp8):
+            if chunk_size < split_size:
                 split_k += 1
 
             split_k_upper_bound = 512
@@ -402,23 +416,14 @@ class FwOp(AttentionFwOpBase):
         v_fp8_scale_shift = inp_.v_fp8_scale_shift
         assert k_fp8_scale_shift is not None
         assert v_fp8_scale_shift is not None
-
-        if k_fp8_scale_shift.dtype == torch.int32:
-            if k_fp8_scale_shift.ndim == 3:
-                return k_fp8_scale_shift.unsqueeze(2), v_fp8_scale_shift.unsqueeze(2)
-            if k_fp8_scale_shift.ndim == 4:
-                return k_fp8_scale_shift, v_fp8_scale_shift
-            raise ValueError(
-                "FP8 scales have to be provided in BMH or BMGH format, "
-                f"but got {k_fp8_scale_shift.shape=}"
-            )
-        elif k_fp8_scale_shift.dtype == torch.float16:
+        if k_fp8_scale_shift.ndim == 3:
+            return k_fp8_scale_shift.unsqueeze(2), v_fp8_scale_shift.unsqueeze(2)
+        if k_fp8_scale_shift.ndim == 4:
             return k_fp8_scale_shift, v_fp8_scale_shift
-        else:
-            raise ValueError(
-                "FP8 scales needs to be either data type fp16 or int32 (packed)"
-            )
-
+        raise ValueError(
+            "FP8 scales have to be provided in BMH or BMGH format, "
+            f"but got {k_fp8_scale_shift.shape=}"
+        )
 
     @classmethod
     def get_extra_args(
@@ -434,6 +439,23 @@ class FwOp(AttentionFwOpBase):
         attn_bias: Any,
         k_fp8_scale_shift: Any,
     ) -> Dict[str, Any]:
+        forced_config = cls.FORCED_CONFIG
+        if forced_config is not None:
+            return {
+                "BLOCK_M": forced_config.kwargs["BLOCK_M"],
+                "BLOCK_N": forced_config.kwargs["BLOCK_N"],
+                "num_warps": forced_config.num_warps,
+                "num_stages": forced_config.num_stages,
+            }
+
+        if torch.version.hip and k_fp8_scale_shift is not None:
+            return {
+                "BLOCK_M": 16,
+                "BLOCK_N": 64,
+                "num_warps": 1,
+                "num_stages": 2,
+            }
+
         BLOCK_M = cls.BLOCK_M
         BLOCK_N = cls.BLOCK_N
         if cls.AUTOTUNE:
@@ -541,7 +563,7 @@ class FwOp(AttentionFwOpBase):
                             num_warps = 1
                             num_stages = 1
                 elif B <= 128 and use_fp8_path:
-                    num_stages = 2
+                    num_stages = 1
                     if is_paged:
                         if mkv <= 256:
                             num_warps = 4
@@ -585,8 +607,8 @@ class FwOp(AttentionFwOpBase):
                             BLOCK_N = 64
                 else:
                     num_warps = 1
-                    num_stages = 2
-                    BLOCK_N = 16
+                    num_stages = 1
+                    BLOCK_N = 64
             else:
                 should_modify_warp_and_block = (
                     Kkv == 128
@@ -643,7 +665,6 @@ class FwOp(AttentionFwOpBase):
             return out, None
 
         k_fp8_scale_shift, v_fp8_scale_shift = cls.get_fp8_scale_shift(inp)
-        IS_FP8_PACKED = (k_fp8_scale_shift is not None) and (k_fp8_scale_shift.dtype == torch.int32)
 
         if not isinstance(inp.attn_bias, torch.Tensor):
             attn_bias_tensor = None
@@ -724,12 +745,6 @@ class FwOp(AttentionFwOpBase):
             NUM_QUERIES_CAUSAL = Mq
         else:
             B, Mq, G, Hq, Kq = q.shape
-            if k_fp8_scale_shift.dtype == torch.float16:
-                Kkv = v.shape[-1]
-                kv_shape = (1 if is_paged or is_gappy else B, -1, G, Hq, Kkv)
-                k_fp8_scale_shift = k_fp8_scale_shift.view(kv_shape[:-1])
-                v_fp8_scale_shift = v_fp8_scale_shift.view(kv_shape[:-1])
-
 
         if attn_bias_tensor is not None and attn_bias_tensor.ndim == 4:
             # (B, H, Mq, Mkv) -> (B, G, H, Mq, Mkv)
@@ -795,9 +810,8 @@ class FwOp(AttentionFwOpBase):
             split_k = cls.SPLIT_K
         else:
             # Use heuristics
-            use_fp8_path = k_fp8_scale_shift is not None
             split_k = (
-                cls.get_split_k(B, G, H, Mk, Mq, page_size, is_paged, use_fp8_path)
+                cls.get_split_k(B, G, H, Mk, Mq, page_size, is_paged)
                 if attn_bias_tensor is None
                 else 1
             )
@@ -854,7 +868,6 @@ class FwOp(AttentionFwOpBase):
             return triton.cdiv(M, META["BLOCK_M"]), B * G * H, split_k
 
         split_size = (Mk + split_k - 1) // split_k
-
         use_seq_len = seq_len is not None
 
         kernel = cls.get_kernel()
@@ -879,11 +892,7 @@ class FwOp(AttentionFwOpBase):
             IS_TRITON_UPGRADE = triton.__version__ == "3.3.1+fb"
         else:
             IS_TRITON_UPGRADE = False
-        IS_HIP = torch.version.hip is not None
-
-        # print(f"B = {B}, H = {H}, G = {G}, split_k = {split_k}, split_size = {split_size}")
-        # print(f"extra_args = {extra_args}")
-
+        IS_HIP = IS_TRITON_UPGRADE and torch.version.hip is not None
         kernel[grid](
             Q=q,
             K=k,
@@ -937,7 +946,6 @@ class FwOp(AttentionFwOpBase):
             IS_LOCAL=IS_LOCAL,
             NUM_QUERIES_CAUSAL=NUM_QUERIES_CAUSAL,
             IS_SPLITK=IS_SPLITK,
-            IS_FP8_PACKED = IS_FP8_PACKED,
             SPLIT_K_EARLY_EXIT=cls.SPLIT_K_EARLY_EXIT,
             USE_PAGED_ATTENTION=is_paged,
             PAGE_SIZE=page_size,
