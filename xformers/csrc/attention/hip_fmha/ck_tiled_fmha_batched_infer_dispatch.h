@@ -29,6 +29,16 @@ struct batched_infer_mask_bias_dropout_dispatch {
       (MaxK <= 128 && !kHasDropout);
 
   using FmhaShape = typename FmhaFwdShape<MaxK, MTile>::Type;
+#if defined(FMHA_BUILD_ON_GFX950)
+  // seq_len runtime threshold for switching fmha_fwd_v3 and qr_async_tr_load
+  // pipeline on gfx950.
+  // Note: this number need to be tuned if we want to get better performance
+  static constexpr int switch_seqlen_threshold = 2000;
+
+  using FmhaV3Shape = typename FmhaFwdSpecificShapeForV3::shape;
+  using FmhaQRAsyncTrloadShape =
+      typename FmhaFwdSpecificShapeForQRAsyncTrload::shape;
+#endif
 
   static constexpr ck_tile::index_t kKLoadLength =
       (kUseWholeKPrefetchPipeline || MaxK > 256) ? FmhaShape::kQKHeaddim
@@ -59,6 +69,45 @@ struct batched_infer_mask_bias_dropout_dispatch {
       false, // kUseTrLoad
       FmhaTraits>;
 
+#if defined(FMHA_BUILD_ON_GFX950)
+  template <typename FmhaTraits, typename FmhaMask>
+  using FmhaPipelineProblemV3Temp = ck_tile::BlockFmhaFwdV3PipelineProblem<
+      typename FmhaFwdTypeConfig<ScalarType>::QDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::KDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::VDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::SaccDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::SMPLComputeDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::LSEDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::PDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::ODataType,
+      FmhaV3Shape,
+      false, // kIsGroupMode
+      FmhaMask,
+      FmhaTraits>;
+
+  template <typename FmhaTraits, typename FmhaMask>
+  using FmhaPipelineProblemQRAsyncTrloadTemp =
+      ck_tile::BlockFmhaPipelineProblem<
+          typename FmhaFwdTypeConfig<ScalarType>::QDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::KDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::VDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::SaccDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::SMPLComputeDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::BiasDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::RandValOutputDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::LSEDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::PDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
+          typename FmhaFwdTypeConfig<ScalarType>::ODataType,
+          FmhaQRAsyncTrloadShape,
+          false, // kIsGroupMode
+          AttentionVariant<FmhaTraits>,
+          FmhaMask,
+          true, // kUseTrLoad
+          FmhaTraits>;
+#endif
+
   static void Run(BatchedForwardParams& param, hipStream_t stream) {
     using FmhaMask = ck_tile::SimplifiedGenericAttentionMask<kHasMask>;
 
@@ -75,6 +124,79 @@ struct batched_infer_mask_bias_dropout_dispatch {
     // no need to check seqlen_q since it is not used as fastest dim,
     // buffer_load_dwordxx/buffer_store_dwordxx can handle oob access
     constexpr bool kPadSeqLenQ = false;
+
+#if defined(FMHA_BUILD_ON_GFX950)
+      // only use fmha_fwd_v3 and qr_async_trload pipeline with hdim=128
+      if (param.K == 128 && param.Kv == 128) {
+        // use fmha_fwd_v3 pipeline if seqlen > switch_seqlen_threshold and mask
+        // type is 0(no_mask) or 2(bottom-right casual mask)
+        if (param.M > switch_seqlen_threshold &&
+            (param.custom_mask_type == 0 || param.custom_mask_type == 2)) {
+          if constexpr (MaxK == 128) {
+            using FmhaTraits = ck_tile::TileFmhaFwdV3Traits<
+                false, // kPadSeqLenQ
+                false, // kPadSeqLenK
+                false, // kPadHeadDimQ
+                false, // kPadHeadDimV
+                false, // kStoreLSE
+                occupancy>;
+            using FmhaMaskForV3 =
+                ck_tile::GenericAttentionMask<kHasMask, false>;
+            using FmhaPipelineProblem =
+                FmhaPipelineProblemV3Temp<FmhaTraits, FmhaMaskForV3>;
+            using FmhaPipeline =
+                ck_tile::BlockFmhaFwdV3Pipeline<FmhaPipelineProblem>;
+            using FmhaEpilogue =
+                ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
+                    typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
+                    typename FmhaFwdTypeConfig<ScalarType>::ODataType,
+                    false,
+                    false>>;
+            using FmhaKernel =
+                ck_tile::FmhaFwdV3Kernel<FmhaPipeline, FmhaEpilogue>;
+            RunWithKernelForV3<FmhaKernel>(param, stream);
+            return;
+          } else {
+            // do nothing, no needs to compile
+          };
+        } else {
+          // use qr_async_trload pipeline if seqlen <= switch_seqlen_threshold
+          if constexpr (MaxK == 128) {
+            using FmhaTraits = ck_tile::TileFmhaTraits<
+                false, // kPadSeqLenQ,
+                false, // kPadSeqLenK,
+                false, // kPadHeadDimQ,
+                false, // kPadHeadDimV,
+                false, // kHasLogitsSoftCap
+                kBiasEnum,
+                false, // kHasBiasGrad place-holder
+                false, // kStoreLSE
+                kHasDropout,
+                false, // kDoFp8StaticQuant place-holder
+                1 // Occupancy place-holder
+                >;
+            using FmhaPipelineProblem =
+                FmhaPipelineProblemQRAsyncTrloadTemp<FmhaTraits, FmhaMask>;
+            using FmhaPipeline = ck_tile::BlockFmhaPipelineQRKSVSAsyncTrload<
+                FmhaPipelineProblem>;
+            using FmhaEpilogue =
+                ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
+                    typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
+                    typename FmhaFwdTypeConfig<ScalarType>::ODataType,
+                    false,
+                    false>>;
+            using FmhaKernel =
+                ck_tile::FmhaFwdKernel<FmhaPipeline, FmhaEpilogue>;
+            RunWithKernel<FmhaKernel>(param, stream);
+            return;
+          } else {
+            // do nothing, no needs to compile
+          };
+        };
+      } else {
+        // do nothing, go to the following pipeline selection
+      };
+#endif
 
     // only use qr_ks_vs_async pipeline with hdim-96
     const bool use_async_pipeline =
@@ -239,4 +361,73 @@ struct batched_infer_mask_bias_dropout_dispatch {
         ck_tile::make_kernel<kBlockPerCu>(
             FmhaKernel{}, kGridSize, kBlockSize, 0, kargs));
   };
+
+#if defined(FMHA_BUILD_ON_GFX950)
+  template <typename FmhaKernel>
+  static void RunWithKernelForV3(
+      BatchedForwardParams& param,
+      hipStream_t stream) {
+     /// NOTICE: This was borrowed from Aiter. Make sure the selected remap_opt setting truly
+    /// maximizes the kernel's performance.
+    int remap_opt = 2;
+    if(param.custom_mask_type &&
+       ((param.Hq % 8 != 0) || (param.M > 16384)))
+    {
+        if(param.M >= 65536)
+        {
+            remap_opt = 0;
+        }
+        else
+        {
+            remap_opt = 1;
+        }
+    }
+    const auto kargs = [&] {
+      return FmhaKernel::MakeKargs(
+          param.q_ptr,
+          param.k_ptr,
+          param.v_ptr,
+          nullptr, // lse_ptr
+          param.out_ptr,
+          param.M, // seqlen_q
+          param.N, // seqlen_k
+          param.K, // hdim_q
+          param.Kv, // hdim_v
+          param.Hq, // nhead_q
+          param.Hq / param.Hkv, // nhead_ratio_qk
+          param.scale,
+          param.q_strides[1], // q, k, v, out tensor seq-dim
+                              // stride
+          param.k_strides[1],
+          param.v_strides[1],
+          param.out_strides[1],
+          param.q_strides[2], // q, k, v, lse, out tensor
+                              // head-dim stride
+          param.k_strides[2],
+          param.v_strides[2],
+          0, // nhead_stride_lse
+          param.out_strides[2],
+          param.q_strides[0], // q, k, v, lse, out tensor
+                              // batch-dim stride
+          param.k_strides[0],
+          param.v_strides[0],
+          0, // batch_stride_lse
+          param.out_strides[0],
+          (param.window_size > 0) ? param.window_size - 1
+                                  : -1, // window_left_size
+          (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+          param.custom_mask_type,
+	  remap_opt);
+    }();
+
+    dim3 kGridSize = FmhaKernel::GridSize(param.B, param.Hq, param.M, param.Kv);
+    constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
+    constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
+
+    (void)ck_tile::launch_kernel(
+        ck_tile::stream_config{stream, false},
+        ck_tile::make_kernel<kBlockPerCu>(
+            FmhaKernel{}, kGridSize, kBlockSize, 0, kargs));
+  };
+#endif
 };
