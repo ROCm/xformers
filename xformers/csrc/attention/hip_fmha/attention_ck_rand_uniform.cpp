@@ -79,7 +79,7 @@ at::Tensor rand_uniform_int(
 
     (void)ck_tile::launch_kernel(
         ck_tile::stream_config{stream, false},
-        ck_tile::make_kernel<kBlockSize.x, kBlockPerCu>(
+        ck_tile::make_kernel<kBlockPerCu>(
             FmhaRandUniformKernel_{}, kGridSize, kBlockSize, 0, kargs));
   }
 

@@ -321,7 +321,7 @@ struct batched_forward_splitkv_mask_bias_dropout_dispatch {
 
     (void)ck_tile::launch_kernel(
         ck_tile::stream_config{stream, false},
-        ck_tile::make_kernel<kBlockSize.x, kBlockPerCu>(
+        ck_tile::make_kernel<kBlockPerCu>(
             FmhaFwdSplitKVKernel{}, kGridSize, kBlockSize, 0, kargs));
   };
 
@@ -362,7 +362,7 @@ struct batched_forward_splitkv_mask_bias_dropout_dispatch {
 
     (void)ck_tile::launch_kernel(
         ck_tile::stream_config{stream, false},
-        ck_tile::make_kernel<kBlockSize.x, kBlockPerCu>(
+        ck_tile::make_kernel<kBlockPerCu>(
             FmhaSplitKVCombineKernel{}, kGridSize, kBlockSize, 0, kargs));
   };
 };
