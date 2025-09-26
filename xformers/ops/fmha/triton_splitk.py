@@ -412,7 +412,7 @@ class FwOp(AttentionFwOpBase):
                 "FP8 scales have to be provided in BMH or BMGH format, "
                 f"but got {k_fp8_scale_shift.shape=}"
             )
-        elif k_fp8_scale_shift.dtype == torch.float16:
+        elif k_fp8_scale_shift is not None and k_fp8_scale_shift.dtype == torch.float16:
             return k_fp8_scale_shift, v_fp8_scale_shift
         else:
             raise ValueError(
@@ -725,7 +725,7 @@ class FwOp(AttentionFwOpBase):
             NUM_QUERIES_CAUSAL = Mq
         else:
             B, Mq, G, Hq, Kq = q.shape
-            if k_fp8_scale_shift.dtype == torch.float16:
+            if k_fp8_scale_shift is not None and k_fp8_scale_shift.dtype == torch.float16:
                 Kkv = v.shape[-1]
                 kv_shape = (1 if is_paged or is_gappy else B, -1, G, Hq, Kkv)
                 k_fp8_scale_shift = k_fp8_scale_shift.view(kv_shape[:-1])
