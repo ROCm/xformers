@@ -526,10 +526,43 @@ def _fwd_kernel_splitK(
         k: "VAR_ARGS_ARRAY"  # noqa: F821
         v: "VAR_ARGS_ARRAY"  # noqa: F821
         for i in range(len(acc)):  # noqa: F821
-            k[i], v[i] = load_dequantize_k_v_group(  # noqa: F821
+            # k[i], v[i] = load_dequantize_k_v_group(  # noqa: F821
+            #     K_block_ptr,
+            #     V_block_ptr,
+            #     K_scale_shift_block_ptr,
+            #     V_scale_shift_block_ptr,
+            #     BOUNDS_CHECKS_N,
+            #     PACKED_PER_VAL,
+            #     PACKED_D_PER_GROUP,
+            #     FP8_QUANTIZED,
+            #     IS_FP8_PACKED,
+            #     Q.dtype.element_ty,
+            #     i,
+            #     IS_HIP,
+            # )
+
+            k[i] = load_dequantize_k_group(  # noqa: F821
                 K_block_ptr,
-                V_block_ptr,
                 K_scale_shift_block_ptr,
+                BOUNDS_CHECKS_N,
+                PACKED_PER_VAL,
+                PACKED_D_PER_GROUP,
+                FP8_QUANTIZED,
+                IS_FP8_PACKED,
+                Q.dtype.element_ty,
+                i,
+                IS_HIP,
+            )
+
+
+        # -- compute qk ---
+        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+        for i in range(len(acc)):  # noqa: F821
+            qk += tl.dot(q[i], k[i])  # noqa: F821
+
+        for i in range(len(acc)):  # noqa: F821
+            v[i] = load_dequantize_v_group(  # noqa: F821
+                V_block_ptr,
                 V_scale_shift_block_ptr,
                 BOUNDS_CHECKS_N,
                 PACKED_PER_VAL,
@@ -541,10 +574,6 @@ def _fwd_kernel_splitK(
                 IS_HIP,
             )
 
-        # -- compute qk ---
-        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        for i in range(len(acc)):  # noqa: F821
-            qk += tl.dot(q[i], k[i])  # noqa: F821
         qk *= qk_scale
 
         if start_n == lo and ignore_in_first_block > 0:
@@ -864,6 +893,133 @@ def load_dequantize_k_v_group(
             k = tl.trans(k_t)
     return k, v
 
+
+@triton.jit
+def load_dequantize_k_group(
+    K_block_ptr,
+    K_scale_shift_block_ptr,
+    BOUNDS_CHECKS_N: tl.constexpr,
+    PACKED_PER_VAL: tl.constexpr,
+    PACKED_D_PER_GROUP: tl.constexpr,
+    FP8_QUANTIZED: tl.constexpr,
+    IS_FP8_PACKED: tl.constexpr,
+    dtype: tl.constexpr,
+    group_id: tl.constexpr,
+    IS_HIP: tl.constexpr,
+):
+    """Load K/V for a given block. In case of int4/fp8-quantized K/V, dequantize them after loading.
+    If quantization is group-wise, use group_id to advance the pointers to the current group.
+    """
+    # Advance to the current quantization group
+    K_block_ptr = tl.advance(K_block_ptr, (PACKED_D_PER_GROUP * group_id, 0))
+
+    # -- load k, v --
+    k = tl.load(K_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ())
+
+    # If K/V are quantized, load quantization coefficients and dequantize.
+    if FP8_QUANTIZED and IS_FP8_PACKED:
+        k_scale_shift = tl.load(
+            K_scale_shift_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            k_scale, k_shift = cast_uint32_to_float(k_scale_shift)
+            k = dequantize_k_hip(k, k_scale, k_shift, PACKED_PER_VAL).to(dtype)
+        else:
+            k_scale, k_shift = cast_uint32_to_half2(k_scale_shift)
+            k_t = dequantize(
+                tl.trans(k),
+                tl.trans(k_scale),
+                tl.trans(k_shift),
+                PACKED_PER_VAL,
+                IS_HIP,
+            ).to(dtype)
+            k = tl.trans(k_t)
+    elif FP8_QUANTIZED:
+        k_scale_shift = tl.load(
+            K_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        k_scale, k_shift = k_scale_shift.to(tl.float32).split()
+        k = k.to(tl.float32) * k_scale + k_shift
+        k = k.to(dtype)
+
+    elif PACKED_PER_VAL > 1:
+        # Int4 quantization.
+        K_scale_shift_block_ptr = tl.advance(K_scale_shift_block_ptr, (group_id, 0))
+
+        k_scale_shift = tl.load(
+            K_scale_shift_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            k_scale, k_shift = cast_uint32_to_float(k_scale_shift)
+            k = dequantize_k_hip(k, k_scale, k_shift, PACKED_PER_VAL).to(dtype)
+        else:
+            k_scale, k_shift = cast_uint32_to_half2(k_scale_shift)
+            k_t = dequantize(
+                tl.trans(k),
+                tl.trans(k_scale),
+                tl.trans(k_shift),
+                PACKED_PER_VAL,
+                IS_HIP,
+            ).to(dtype)
+            k = tl.trans(k_t)
+    return k
+
+
+@triton.jit
+def load_dequantize_v_group(
+    V_block_ptr,
+    V_scale_shift_block_ptr,
+    BOUNDS_CHECKS_N: tl.constexpr,
+    PACKED_PER_VAL: tl.constexpr,
+    PACKED_D_PER_GROUP: tl.constexpr,
+    FP8_QUANTIZED: tl.constexpr,
+    IS_FP8_PACKED: tl.constexpr,
+    dtype: tl.constexpr,
+    group_id: tl.constexpr,
+    IS_HIP: tl.constexpr,
+):
+    """Load K/V for a given block. In case of int4/fp8-quantized K/V, dequantize them after loading.
+    If quantization is group-wise, use group_id to advance the pointers to the current group.
+    """
+    # Advance to the current quantization group
+    V_block_ptr = tl.advance(V_block_ptr, (0, PACKED_D_PER_GROUP * group_id))
+
+    # -- load k, v --
+    v = tl.load(V_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ())
+
+    # If K/V are quantized, load quantization coefficients and dequantize.
+    if FP8_QUANTIZED and IS_FP8_PACKED:
+        v_scale_shift = tl.load(
+            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            # MI300 doesn't have builtin casting instructions for fp8 -> bf16,
+            # so casting to f32 is actually more performant on this workload.
+            v_scale, v_shift = cast_uint32_to_float(v_scale_shift)
+        else:
+            v_scale, v_shift = cast_uint32_to_half2(v_scale_shift)
+        v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
+    elif FP8_QUANTIZED:
+        v_scale_shift = tl.load(
+            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        v_scale, v_shift = v_scale_shift.to(tl.float32).split()
+        v = v.to(tl.float32) * v_scale[:, None] + v_shift[:, None]
+        v = v.to(dtype)
+    elif PACKED_PER_VAL > 1:
+        # Int4 quantization.
+        V_scale_shift_block_ptr = tl.advance(V_scale_shift_block_ptr, (0, group_id))
+
+        v_scale_shift = tl.load(
+            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+        )
+        if IS_HIP:
+            v_scale, v_shift = cast_uint32_to_float(v_scale_shift)
+            v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
+        else:
+            v_scale, v_shift = cast_uint32_to_half2(v_scale_shift)
+            v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
+    return v
 
 @triton.jit
 def cast_uint32_to_half2(scale_shift):
