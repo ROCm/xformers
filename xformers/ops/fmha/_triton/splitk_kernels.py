@@ -526,21 +526,6 @@ def _fwd_kernel_splitK(
         k: "VAR_ARGS_ARRAY"  # noqa: F821
         v: "VAR_ARGS_ARRAY"  # noqa: F821
         for i in range(len(acc)):  # noqa: F821
-            # k[i], v[i] = load_dequantize_k_v_group(  # noqa: F821
-            #     K_block_ptr,
-            #     V_block_ptr,
-            #     K_scale_shift_block_ptr,
-            #     V_scale_shift_block_ptr,
-            #     BOUNDS_CHECKS_N,
-            #     PACKED_PER_VAL,
-            #     PACKED_D_PER_GROUP,
-            #     FP8_QUANTIZED,
-            #     IS_FP8_PACKED,
-            #     Q.dtype.element_ty,
-            #     i,
-            #     IS_HIP,
-            # )
-
             k[i] = load_dequantize_k_group(  # noqa: F821
                 K_block_ptr,
                 K_scale_shift_block_ptr,
