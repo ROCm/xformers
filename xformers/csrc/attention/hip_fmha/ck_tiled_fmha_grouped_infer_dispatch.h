@@ -268,7 +268,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
             occupancy>;
 
         using FmhaPipelineProblem =
-                FmhaPipelineProblemTemp<FmhaTraits, FmhaMask>;
+            FmhaPipelineProblemTemp<FmhaTraits, FmhaMask>;
 
         using FmhaPipeline =
             ck_tile::BlockFmhaPipelineQRKSVSAsync<FmhaPipelineProblem>;
