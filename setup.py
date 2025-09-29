@@ -397,6 +397,7 @@ def rename_cpp_cu(cpp_files):
     for entry in cpp_files:
         shutil.copy(entry, os.path.splitext(entry)[0] + ".cu")
 
+
 def get_rocm_agent_arch():
     exec_path = "/opt/rocm/bin/rocm_agent_enumerator"
     if os.path.isfile(exec_path) and os.access(exec_path, os.X_OK):
@@ -405,6 +406,7 @@ def get_rocm_agent_arch():
         return arch_list[0]
     else:
         return "gfx942"
+
 
 def get_extensions():
     extensions_dir = os.path.join("xformers", "csrc")
@@ -616,7 +618,7 @@ def get_extensions():
 
         extra_compile_args["nvcc"] = [
             "-O3",
-            "-std=c++17",
+            "-std=c++20",
             f"--offload-arch={arch}",
             *offload_compress_flag,
             "-U__CUDA_NO_HALF_OPERATORS__",
