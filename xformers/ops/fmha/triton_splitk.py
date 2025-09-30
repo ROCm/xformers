@@ -892,7 +892,6 @@ class FwOp(AttentionFwOpBase):
         #     IS_TRITON_UPGRADE = False
         IS_HIP = torch.version.hip is not None
 
-
         kernel[grid](
             Q=q,
             K=k,
