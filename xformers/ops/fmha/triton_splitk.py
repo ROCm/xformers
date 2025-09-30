@@ -335,7 +335,15 @@ class FwOp(AttentionFwOpBase):
 
     @classmethod
     def get_split_k(
-        cls, B: int, G: int, H: int, Mk: int, Mq: int, page_size: int, is_paged=False, is_fp8 = False,
+        cls,
+        B: int,
+        G: int,
+        H: int,
+        Mk: int,
+        Mq: int,
+        page_size: int,
+        is_paged=False,
+        is_fp8=False,
     ) -> int:
         """Heuristic for the number of splits"""
         bh = max(B * H, 1)  # NOTE: Handle B*h=0 case
@@ -418,7 +426,6 @@ class FwOp(AttentionFwOpBase):
             raise ValueError(
                 "FP8 scales needs to be either data type fp16 or int32 (packed)"
             )
-
 
     @classmethod
     def get_extra_args(
@@ -644,7 +651,9 @@ class FwOp(AttentionFwOpBase):
             return out, None
 
         k_fp8_scale_shift, v_fp8_scale_shift = cls.get_fp8_scale_shift(inp)
-        IS_FP8_PACKED = (k_fp8_scale_shift is not None) and (k_fp8_scale_shift.dtype == torch.int32)
+        IS_FP8_PACKED = (k_fp8_scale_shift is not None) and (
+            k_fp8_scale_shift.dtype == torch.int32
+        )
 
         if not isinstance(inp.attn_bias, torch.Tensor):
             attn_bias_tensor = None
@@ -725,12 +734,14 @@ class FwOp(AttentionFwOpBase):
             NUM_QUERIES_CAUSAL = Mq
         else:
             B, Mq, G, Hq, Kq = q.shape
-            if k_fp8_scale_shift is not None and k_fp8_scale_shift.dtype == torch.float16:
+            if (
+                k_fp8_scale_shift is not None
+                and k_fp8_scale_shift.dtype == torch.float16
+            ):
                 Kkv = v.shape[-1]
                 kv_shape = (1 if is_paged or is_gappy else B, -1, G, Hq, Kkv)
                 k_fp8_scale_shift = k_fp8_scale_shift.view(kv_shape[:-1])
                 v_fp8_scale_shift = v_fp8_scale_shift.view(kv_shape[:-1])
-
 
         if attn_bias_tensor is not None and attn_bias_tensor.ndim == 4:
             # (B, H, Mq, Mkv) -> (B, G, H, Mq, Mkv)
@@ -938,7 +949,7 @@ class FwOp(AttentionFwOpBase):
             IS_LOCAL=IS_LOCAL,
             NUM_QUERIES_CAUSAL=NUM_QUERIES_CAUSAL,
             IS_SPLITK=IS_SPLITK,
-            IS_FP8_PACKED = IS_FP8_PACKED,
+            IS_FP8_PACKED=IS_FP8_PACKED,
             SPLIT_K_EARLY_EXIT=cls.SPLIT_K_EARLY_EXIT,
             USE_PAGED_ATTENTION=is_paged,
             PAGE_SIZE=page_size,

@@ -539,7 +539,6 @@ def _fwd_kernel_splitK(
                 IS_HIP,
             )
 
-
         # -- compute qk ---
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         for i in range(len(acc)):  # noqa: F821
@@ -1006,6 +1005,7 @@ def load_dequantize_v_group(
             v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
     return v
 
+
 @triton.jit
 def cast_uint32_to_half2(scale_shift):
     """Extract two float16 packed into one int32"""
@@ -1013,15 +1013,6 @@ def cast_uint32_to_half2(scale_shift):
     shift = scale_shift >> 16
     scale = scale.to(tl.uint16).to(tl.float16, bitcast=True)
     shift = shift.to(tl.uint16).to(tl.float16, bitcast=True)
-    return scale, shift
-
-@triton.jit
-def cast_uint32_to_float(scale_shift):
-    """Extract two float16 packed into one int32"""
-    scale = scale_shift & 0xFFFF
-    shift = scale_shift >> 16
-    scale = scale.to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
-    shift = shift.to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
     return scale, shift
 
 
@@ -1061,7 +1052,14 @@ def dequantize_k_hip(
 
     if PACKED_PER_VAL == 4:
         # FP8 quantization.
-        fp8_type = tl.float8e4b8 if (torch.version.hip is not None and triton.runtime.driver.active.get_current_target().arch == 'gfx942') else tl.float8e4nv
+        fp8_type = (
+            tl.float8e4b8
+            if (
+                torch.version.hip is not None
+                and triton.runtime.driver.active.get_current_target().arch == "gfx942"
+            )
+            else tl.float8e4nv
+        )
         dequant = (
             quant_offset.to(tl.uint8).to(fp8_type, bitcast=True).to(scale.dtype) * scale
             + shift
@@ -1109,7 +1107,14 @@ def dequantize(
     )
     if PACKED_PER_VAL == 4:
         # FP8 quantization.
-        fp8_type = tl.float8e4b8 if (torch.version.hip is not None and triton.runtime.driver.active.get_current_target().arch == 'gfx942') else tl.float8e4nv
+        fp8_type = (
+            tl.float8e4b8
+            if (
+                torch.version.hip is not None
+                and triton.runtime.driver.active.get_current_target().arch == "gfx942"
+            )
+            else tl.float8e4nv
+        )
         dequant = (
             quant_offset.to(tl.uint8).to(fp8_type, bitcast=True).to(scale.dtype) * scale
             + shift
