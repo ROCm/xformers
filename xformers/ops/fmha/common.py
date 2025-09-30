@@ -236,8 +236,8 @@ class Inputs:
                     f"  attn_bias   : {bias_device}\n"
                 )
 
-        quantized_dtypes = self.key.dtype == self.value.dtype == torch.int32
-        non_quantized_dtypes = all(x.dtype == self.query.dtype for x in qkv)
+        # quantized_dtypes = self.key.dtype == self.value.dtype == torch.int32
+        # non_quantized_dtypes = all(x.dtype == self.query.dtype for x in qkv)
         # if not (quantized_dtypes or non_quantized_dtypes):
         #     raise ValueError(
         #         "Query/Key/Value should either all have the same dtype, or "

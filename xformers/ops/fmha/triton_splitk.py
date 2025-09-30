@@ -882,19 +882,16 @@ class FwOp(AttentionFwOpBase):
             k_fp8_scale_shift=k_fp8_scale_shift,
         )
 
-        if _is_triton_available():
-            # Triton 3.3.1+fb is required for AMD specific changes to
-            # improve performance.
-            # TODO: Remove once the triton update lands everywhere.
-            import triton
-
-            IS_TRITON_UPGRADE = triton.__version__ == "3.3.1+fb"
-        else:
-            IS_TRITON_UPGRADE = False
+        # if _is_triton_available():
+        #     # Triton 3.3.1+fb is required for AMD specific changes to
+        #     # improve performance.
+        #     # TODO: Remove once the triton update lands everywhere.
+        #     import triton
+        #     IS_TRITON_UPGRADE = triton.__version__ == "3.3.1+fb"
+        # else:
+        #     IS_TRITON_UPGRADE = False
         IS_HIP = torch.version.hip is not None
 
-        # print(f"B = {B}, H = {H}, G = {G}, split_k = {split_k}, split_size = {split_size}")
-        # print(f"extra_args = {extra_args}")
 
         kernel[grid](
             Q=q,
