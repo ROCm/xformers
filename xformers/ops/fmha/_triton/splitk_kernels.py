@@ -898,7 +898,7 @@ def load_dequantize_k_group(
     K_block_ptr = tl.advance(K_block_ptr, (PACKED_D_PER_GROUP * group_id, 0))
 
     # -- load k, v --
-    k = tl.load(K_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ())
+    k = tl.load(K_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else (), cache_modifier='.cg')
 
     # If K/V are quantized, load quantization coefficients and dequantize.
     if FP8_QUANTIZED and IS_FP8_PACKED:
@@ -920,7 +920,7 @@ def load_dequantize_k_group(
             k = tl.trans(k_t)
     elif FP8_QUANTIZED:
         k_scale_shift = tl.load(
-            K_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+            K_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else (), cache_modifier='.cg'
         )
         k_scale, k_shift = k_scale_shift.to(tl.float32).split()
         k = k.to(tl.float32) * k_scale + k_shift
@@ -969,7 +969,7 @@ def load_dequantize_v_group(
     V_block_ptr = tl.advance(V_block_ptr, (0, PACKED_D_PER_GROUP * group_id))
 
     # -- load k, v --
-    v = tl.load(V_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ())
+    v = tl.load(V_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else (), cache_modifier='.cg')
 
     # If K/V are quantized, load quantization coefficients and dequantize.
     if FP8_QUANTIZED and IS_FP8_PACKED:
@@ -985,7 +985,7 @@ def load_dequantize_v_group(
         v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
     elif FP8_QUANTIZED:
         v_scale_shift = tl.load(
-            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
+            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else (), cache_modifier='.cg'
         )
         v_scale, v_shift = v_scale_shift.to(tl.float32).split()
         v = v.to(tl.float32) * v_scale[:, None] + v_shift[:, None]
