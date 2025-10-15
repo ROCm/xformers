@@ -863,7 +863,7 @@ class FwOp(AttentionFwOpBase):
         def grid(META):
             import triton
 
-            return triton.cdiv(M, META["BLOCK_M"]), B * G * H, split_k
+            return  split_k, B * G * H, triton.cdiv(M, META["BLOCK_M"])
 
         split_size = (Mk + split_k - 1) // split_k
 

@@ -187,13 +187,16 @@ def _fwd_kernel_splitK(
     PACKED_D_PER_GROUP: tl.constexpr = BLOCK_DMODEL // PACKED_PER_VAL // N_GROUPS
     D_PER_GROUP: tl.constexpr = BLOCK_DMODEL // N_GROUPS
 
-    start_m = tl.program_id(0)
+    start_m = tl.program_id(2)
     off_zhg = tl.program_id(1)
+    splitk_idx = tl.program_id(0)
+
+    splitk_idx, off_zhg = tl.swizzle2d(splitk_idx, off_zhg, tl.num_programs(1), tl.num_programs(1), tl.num_programs(0))
+
     off_z = off_zhg // (H * G)
     off_hg = off_zhg % (H * G)
     off_h = off_hg // G
     off_g = off_hg % G
-    splitk_idx = tl.program_id(2)
 
     if USE_SEQ_LEN:
         kv_len = tl.load(Seq_len + off_z)
