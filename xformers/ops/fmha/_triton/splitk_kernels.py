@@ -191,8 +191,6 @@ def _fwd_kernel_splitK(
     off_zhg = tl.program_id(1)
     splitk_idx = tl.program_id(0)
 
-    splitk_idx, off_zhg = tl.swizzle2d(splitk_idx, off_zhg, tl.num_programs(1), tl.num_programs(1), tl.num_programs(0))
-
     off_z = off_zhg // (H * G)
     off_hg = off_zhg % (H * G)
     off_h = off_hg // G
