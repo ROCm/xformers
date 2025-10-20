@@ -427,6 +427,7 @@ class FwOp(AttentionFwOpBase):
                 "FP8 scales needs to be either data type fp16 or int32 (packed)"
             )
 
+
     @classmethod
     def get_extra_args(
         cls,
@@ -651,7 +652,7 @@ class FwOp(AttentionFwOpBase):
             return out, None
 
         k_fp8_scale_shift, v_fp8_scale_shift = cls.get_fp8_scale_shift(inp)
-        IS_FP8_PACKED = (k_fp8_scale_shift is not None) and (
+        IS_PACKED = (k_fp8_scale_shift is not None) and (
             k_fp8_scale_shift.dtype == torch.int32
         )
 
@@ -727,21 +728,28 @@ class FwOp(AttentionFwOpBase):
             k = k.view(kv_shape)
             v = v.view(kv_shape)
             if k_fp8_scale_shift is not None and v_fp8_scale_shift is not None:
-                k_fp8_scale_shift = k_fp8_scale_shift.view(kv_shape[:-1])
-                v_fp8_scale_shift = v_fp8_scale_shift.view(kv_shape[:-1])
+                if IS_PACKED:
+                    k_fp8_scale_shift = k_fp8_scale_shift.view(kv_shape[:-1])
+                    v_fp8_scale_shift = v_fp8_scale_shift.view(kv_shape[:-1])
+                else:
+                    kv_scale_offset_shape = (1 if is_paged or is_gappy else B, -1, Hq, 2)
+                    k_fp8_scale_shift = k_fp8_scale_shift.view(kv_scale_offset_shape)
+                    v_fp8_scale_shift = v_fp8_scale_shift.view(kv_scale_offset_shape)
 
             Mq = q.shape[1]
             NUM_QUERIES_CAUSAL = Mq
         else:
             B, Mq, G, Hq, Kq = q.shape
-            if (
-                k_fp8_scale_shift is not None
-                and k_fp8_scale_shift.dtype == torch.float16
-            ):
-                Kkv = v.shape[-1]
-                kv_shape = (1 if is_paged or is_gappy else B, -1, G, Hq, Kkv)
-                k_fp8_scale_shift = k_fp8_scale_shift.view(kv_shape[:-1])
-                v_fp8_scale_shift = v_fp8_scale_shift.view(kv_shape[:-1])
+            if k_fp8_scale_shift is not None and k_fp8_scale_shift.dtype == torch.float16:
+                if IS_PACKED:
+                    Kkv = v.shape[-1]
+                    kv_shape = (1 if is_paged or is_gappy else B, -1, G, Hq, Kkv)
+                    k_fp8_scale_shift = k_fp8_scale_shift.view(kv_shape[:-1])
+                    v_fp8_scale_shift = v_fp8_scale_shift.view(kv_shape[:-1])
+                else:
+                    kv_scale_offset_shape = (1 if is_paged or is_gappy else B, -1, Hq, 2)
+                    k_fp8_scale_shift = k_fp8_scale_shift.view(kv_scale_offset_shape)
+                    v_fp8_scale_shift = v_fp8_scale_shift.view(kv_scale_offset_shape)
 
         if attn_bias_tensor is not None and attn_bias_tensor.ndim == 4:
             # (B, H, Mq, Mkv) -> (B, G, H, Mq, Mkv)
@@ -863,7 +871,7 @@ class FwOp(AttentionFwOpBase):
         def grid(META):
             import triton
 
-            return  split_k, B * G * H, triton.cdiv(M, META["BLOCK_M"])
+            return split_k, B * G * H, triton.cdiv(M, META["BLOCK_M"])
 
         split_size = (Mk + split_k - 1) // split_k
 
@@ -882,14 +890,6 @@ class FwOp(AttentionFwOpBase):
             k_fp8_scale_shift=k_fp8_scale_shift,
         )
 
-        # if _is_triton_available():
-        #     # Triton 3.3.1+fb is required for AMD specific changes to
-        #     # improve performance.
-        #     # TODO: Remove once the triton update lands everywhere.
-        #     import triton
-        #     IS_TRITON_UPGRADE = triton.__version__ == "3.3.1+fb"
-        # else:
-        #     IS_TRITON_UPGRADE = False
         IS_HIP = torch.version.hip is not None
 
         kernel[grid](
@@ -945,7 +945,7 @@ class FwOp(AttentionFwOpBase):
             IS_LOCAL=IS_LOCAL,
             NUM_QUERIES_CAUSAL=NUM_QUERIES_CAUSAL,
             IS_SPLITK=IS_SPLITK,
-            IS_FP8_PACKED=IS_FP8_PACKED,
+            IS_PACKED = IS_PACKED,
             SPLIT_K_EARLY_EXIT=cls.SPLIT_K_EARLY_EXIT,
             USE_PAGED_ATTENTION=is_paged,
             PAGE_SIZE=page_size,
