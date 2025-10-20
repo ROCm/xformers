@@ -956,7 +956,7 @@ class FwOp(AttentionFwOpBase):
             HAS_ADDITIVE_BIAS=attn_bias_tensor is not None,
             NUM_PROGRAMS_DIM2_CONST=split_k,
             IS_HIP=IS_HIP,
-            USE_TL_SWIZZLE=USE_TL_SWIZZLE
+            USE_TL_SWIZZLE=USE_TL_SWIZZLE,
             **extra_args,
         )
         if not IS_SPLITK:
