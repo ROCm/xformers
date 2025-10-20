@@ -115,6 +115,7 @@ def _fwd_kernel_splitK(
     HAS_ADDITIVE_BIAS: tl.constexpr,
     NUM_PROGRAMS_DIM2_CONST: tl.constexpr,
     IS_HIP: tl.constexpr,
+    USE_TL_SWIZZLE: tl.constexpr,
 ):
     tl.assume(stride_qz > 0)
     tl.assume(stride_qm > 0)
@@ -195,6 +196,9 @@ def _fwd_kernel_splitK(
     off_hg = off_zhg % (H * G)
     off_h = off_hg // G
     off_g = off_hg % G
+
+    if USE_TL_SWIZZLE:
+        splitk_idx, off_zhg = tl.swizzle2d(splitk_idx, off_zhg, tl.num_programs(1), tl.num_programs(1), tl.num_programs(0))
 
     if USE_SEQ_LEN:
         kv_len = tl.load(Seq_len + off_z)
