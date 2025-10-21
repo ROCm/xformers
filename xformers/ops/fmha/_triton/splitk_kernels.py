@@ -192,13 +192,14 @@ def _fwd_kernel_splitK(
     splitk_idx = tl.program_id(0)
     off_zhg = tl.program_id(1)
     start_m = tl.program_id(2)
+
+    if USE_TL_SWIZZLE:
+        splitk_idx, off_zhg = tl.swizzle2d(splitk_idx, off_zhg, tl.num_programs(1), tl.num_programs(1), tl.num_programs(0))
+
     off_z = off_zhg // (H * G)
     off_hg = off_zhg % (H * G)
     off_h = off_hg // G
     off_g = off_hg % G
-
-    if USE_TL_SWIZZLE:
-        splitk_idx, off_zhg = tl.swizzle2d(splitk_idx, off_zhg, tl.num_programs(1), tl.num_programs(1), tl.num_programs(0))
 
     if USE_SEQ_LEN:
         kv_len = tl.load(Seq_len + off_z)
