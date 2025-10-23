@@ -1064,7 +1064,6 @@ def dequantize_k_hip(
             tl.float8e4b8
             if (
                 torch.version.hip is not None
-                and triton.runtime.driver.active.get_current_target().arch == "gfx942"
             )
             else tl.float8e4nv
         )
@@ -1119,7 +1118,6 @@ def dequantize(
             tl.float8e4b8
             if (
                 torch.version.hip is not None
-                and triton.runtime.driver.active.get_current_target().arch == "gfx942"
             )
             else tl.float8e4nv
         )
