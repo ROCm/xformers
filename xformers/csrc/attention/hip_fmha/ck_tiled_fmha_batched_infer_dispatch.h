@@ -160,8 +160,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
         }
       } else {
         // use qr_async_trload pipeline if seqlen <= switch_seqlen_threshold
-        // for MTile <= 64, qr_ks_vs_whole_k_prefetch gives better performance
-        if constexpr (MaxK == 128 && MTile > 64) {
+        if constexpr (MaxK == 128) {
           using FmhaTraits = ck_tile::TileFmhaTraits<
               false, // kPadSeqLenQ,
               false, // kPadSeqLenK,
