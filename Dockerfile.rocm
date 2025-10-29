@@ -1,5 +1,5 @@
 ARG XFORMERS_COMPILE_JOBS=128
-ARG HIP_ARCHITECTURES="gfx90a gfx942"
+ARG HIP_ARCHITECTURE="gfx942"
 
 FROM quay.io/pypa/manylinux_2_28_x86_64 as rocm
 
@@ -7,7 +7,7 @@ RUN set -ex && \
   usermod -a -G render,video $(whoami) && \
   dnf -y install https://www.elrepo.org/elrepo-release-8.el8.elrepo.noarch.rpm && \
   dnf config-manager --set-enabled elrepo-kernel && \
-  dnf -y install https://repo.radeon.com/amdgpu-install/6.2.2/rhel/8.10/amdgpu-install-6.2.60202-1.el8.noarch.rpm
+  dnf -y install https://repo.radeon.com/amdgpu-install/6.4.4/rhel/8.10/amdgpu-install-6.4.60404-1.el8.noarch.rpm
 
 RUN set -ex && \
   dnf -y install amdgpu-dkms rocm 
@@ -26,15 +26,16 @@ RUN set -ex && \
 RUN set -ex && \
   cd /opt/xformers && \
   uv pip install ninja && \
-  uv pip install -r requirements.txt --extra-index-url=https://download.pytorch.org/whl/nightly/rocm6.2 && \
+  uv pip install -r requirements.txt --extra-index-url=https://download.pytorch.org/whl/rocm6.4 && \
   uv pip install -r requirements-test.txt && \
   uv pip install -r requirements-benchmark.txt && \
   uv pip list
 
 ARG XFORMERS_COMPILE_JOBS
 ENV MAX_JOBS=${XFORMERS_COMPILE_JOBS} 
-ARG HIP_ARCHITECTURES
-ENV HIP_ARCHITECTURES=${HIP_ARCHITECTURES} 
+ARG HIP_ARCHITECTURE
+ENV HIP_ARCHITECTURE=${HIP_ARCHITECTURE}
+ENV XFORMERS_CK_FLASH_ATTN=1
 RUN set -ex && \
   cd /opt/xformers && \
   uv build . --wheel --no-build-isolation --verbose --offline && \
