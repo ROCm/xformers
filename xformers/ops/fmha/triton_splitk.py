@@ -543,7 +543,7 @@ class FwOp(AttentionFwOpBase):
                             # Note: This isn't benchmarked, but fp8 seems to scale well.
                             BLOCK_N = 64
                             num_warps = 1
-                            num_stages = 1
+                            num_stages = 2
                         else:
                             BLOCK_N = 128
                             num_warps = 1
