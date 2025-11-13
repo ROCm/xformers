@@ -891,7 +891,8 @@ class FwOp(AttentionFwOpBase):
         )
 
         IS_HIP = torch.version.hip is not None
-        USE_TL_SWIZZLE = (B * G * H % split_k) == 0
+        USE_TL_SWIZZLE = ((B * G * H) % split_k) == 0
+        NON_TEMPORAL_LOAD = True if split_size > 2048 else False
 
         kernel[grid](
             Q=q,
@@ -957,6 +958,7 @@ class FwOp(AttentionFwOpBase):
             NUM_PROGRAMS_DIM2_CONST=split_k,
             IS_HIP=IS_HIP,
             USE_TL_SWIZZLE=USE_TL_SWIZZLE,
+            NON_TEMPORAL_LOAD = NON_TEMPORAL_LOAD,
             **extra_args,
         )
         if not IS_SPLITK:
