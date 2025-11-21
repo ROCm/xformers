@@ -171,7 +171,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
               false, // kHasBiasGrad place-holder
               false, // kStoreLSE
               kHasDropout,
-              false, // kDoFp8StaticQuant place-holder
+              ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
               1 // Occupancy place-holder(-1 will make the build fail)
               >;
           using FmhaPipelineProblem =
@@ -214,7 +214,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
                 false, // kHasBiasGrad place-holder
                 false, // kStoreLSE
                 kHasDropout,
-                false, // kDoFp8StaticQuant place-holder
+                ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
                 occupancy>;
 
             using FmhaPipelineProblem =
@@ -263,7 +263,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
             false, // kHasBiasGrad place-holder
             false, // kStoreLSE
             kHasDropout,
-            false, // kDoFp8StaticQuant place-holder
+            ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
             occupancy>;
 
         using FmhaPipelineProblem =
@@ -296,19 +296,21 @@ struct grouped_infer_mask_bias_dropout_dispatch {
           param.k_ptr,
           param.v_ptr,
           param.attn_bias_ptr,
+          nullptr, // q_descale_ptr
+          nullptr, // k_descale_ptr
+          nullptr, // v_descale_ptr
           nullptr, // rand_val_ptr
           nullptr, // lse_ptr
           param.out_ptr,
           param.seqstart_q_dev_ptr,
           param.seqstart_k_dev_ptr,
+          nullptr, // seqlen_q_ptr, most recently added kernel argument
           param.seqlen_k_dev_ptr,
           param.K, // hdim_q
           param.Kv, // hdim_v
           param.Hq, // nhead_q
           param.Hq / param.Hkv, // nhead_ratio_qk
           param.scale,
-          1.0f, // scale_p
-          1.0f, // scale_o
           0.f, // logits_soft_cap
           param.q_strides[0], // q, k, v, bias, randval, out tensor seq-dim
                               // stride
@@ -341,7 +343,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
         param.max_seqlen_q,
         param.Kv,
         param.seqlen_k_dev_ptr != nullptr);
-    constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
+    dim3 kBlockSize = FmhaKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(
@@ -400,7 +402,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
 
     dim3 kGridSize = FmhaKernel::GridSize(
         param.num_batches, param.Hq, param.max_seqlen_q, param.Kv);
-    constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
+    dim3 kBlockSize = FmhaKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(

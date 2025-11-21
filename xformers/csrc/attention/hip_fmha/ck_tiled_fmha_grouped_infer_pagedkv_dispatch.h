@@ -163,7 +163,7 @@ struct grouped_infer_pagedkv_mask_bias_dropout_dispatch {
         param.max_seqlen_q,
         param.Kv,
         kargs.seqlen_k_ptr != nullptr);
-    constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
+    dim3 kBlockSize = FmhaKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(

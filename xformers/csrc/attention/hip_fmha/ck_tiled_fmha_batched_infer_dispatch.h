@@ -171,7 +171,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
               false, // kHasBiasGrad place-holder
               false, // kStoreLSE
               kHasDropout,
-              false, // kDoFp8StaticQuant place-holder
+              ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
               1 // Occupancy place-holder(-1 will make the build fail)
               >;
           using FmhaPipelineProblem =
@@ -220,7 +220,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
                 false, // kHasBiasGrad place-holder
                 false, // kStoreLSE
                 kHasDropout,
-                false, // kDoFp8StaticQuant place-holder
+                ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
                 occupancy>;
 
             using FmhaPipelineProblem =
@@ -270,7 +270,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
               false, // kHasBiasGrad place-holder
               false, // kStoreLSE
               kHasDropout,
-              false, // kDoFp8StaticQuant place-holder
+              ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
               occupancy>;
 
           using FmhaPipelineProblem =
@@ -304,6 +304,9 @@ struct batched_infer_mask_bias_dropout_dispatch {
           param.k_ptr,
           param.v_ptr,
           param.attn_bias_ptr,
+          nullptr, // q_descale_ptr
+          nullptr, // k_descale_ptr
+          nullptr, // v_descale_ptr
           nullptr, // rand_val_ptr
           nullptr, // lse_ptr
           param.out_ptr,
@@ -314,8 +317,6 @@ struct batched_infer_mask_bias_dropout_dispatch {
           param.Hq, // nhead_q
           param.Hq / param.Hkv, // nhead_ratio_qk
           param.scale,
-          1.0f, // scale_p
-          1.0f, // scale_o
           0.0f, // logits_soft_cap
           param.q_strides[1], // q, k, v, bias, randval, out tensor seq-dim
                               // stride
@@ -351,7 +352,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
 
     dim3 kGridSize =
         FmhaKernel::GridSize(param.B, param.Hq, param.M, param.Kv, false);
-    constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
+    dim3 kBlockSize = FmhaKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(
@@ -415,7 +416,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
     }();
 
     dim3 kGridSize = FmhaKernel::GridSize(param.B, param.Hq, param.M, param.Kv);
-    constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
+    dim3 kBlockSize = FmhaKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(

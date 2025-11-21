@@ -109,17 +109,11 @@ struct batched_backward_mask_bias_dropout_dispatch {
 
       BOOL_SWITCH_2(
           pad_headdim_q, kPadHeadDimQ, pad_headdim_v, kPadHeadDimV, [&] {
-            using FmhaBwdTraits_ = ck_tile::TileFmhaTraits<
-                false, // kPadSeqLenQ, not used
-                false, // kPadSeqLenK, not used
+            using FmhaBwdTraits_ = ck_tile::TileFmhaBwdTraits<
                 kPadHeadDimQ,
                 kPadHeadDimV,
-                false, // kHasLogitsSoftCap
                 kBiasEnum,
                 kHasBiasGrad,
-                false, // kStoreLSE
-                false, // place-holder for kHasDropout, not used actually
-                false, // kDoFp8StaticQuant place-holder
                 occupancy>;
 
             using FmhaBwdPipelineProblem =
@@ -217,7 +211,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
 
     dim3 kGridSize =
         FmhaBwdOGradDotOKernel::GridSize(param.B, param.Hq, param.M);
-    constexpr dim3 kBlockSize = FmhaBwdOGradDotOKernel::BlockSize();
+    dim3 kBlockSize = FmhaBwdOGradDotOKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu =
         FmhaBwdOGradDotOKernel::kBlockPerCu;
 
@@ -300,7 +294,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
     }();
 
     dim3 kGridSize = FmhaBwdDQDKDVKernel::GridSize(param.B, param.Hq, param.N);
-    constexpr dim3 kBlockSize = FmhaBwdDQDKDVKernel::BlockSize();
+    dim3 kBlockSize = FmhaBwdDQDKDVKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaBwdDQDKDVKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(
@@ -331,7 +325,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
 
     dim3 kGridSize =
         FmhaBwdConvertQGradKernel::GridSize(param.B, param.Hq, param.M);
-    constexpr dim3 kBlockSize = FmhaBwdConvertQGradKernel::BlockSize();
+    dim3 kBlockSize = FmhaBwdConvertQGradKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu =
         FmhaBwdConvertQGradKernel::kBlockPerCu;
 

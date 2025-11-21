@@ -91,7 +91,7 @@ struct batched_forward_mask_bias_dropout_dispatch {
               false, // kHasBiasGrad place-holder
               true, // kStoreLSE
               kHasDropout,
-              false, // kDoFp8StaticQuant place-holder
+              ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
               occupancy>;
 
           using FmhaPipelineProblem =
@@ -124,6 +124,9 @@ struct batched_forward_mask_bias_dropout_dispatch {
           param.k_ptr,
           param.v_ptr,
           param.attn_bias_ptr,
+          nullptr, // q_descale_ptr
+          nullptr, // k_descale_ptr
+          nullptr, // v_descale_ptr
           nullptr, // rand_val_ptr
           param.logsumexp_ptr,
           param.out_ptr,
@@ -134,8 +137,6 @@ struct batched_forward_mask_bias_dropout_dispatch {
           param.Hq, // nhead_q
           param.Hq / param.Hkv, // nhead_ratio_qk
           param.scale,
-          1.0f, // scale_p
-          1.0f, // scale_o
           0.0f, // logits_soft_cap
           param.q_strides[1], // q, k, v, bias, randval, out tensor seq-dim
                               // stride
@@ -171,7 +172,7 @@ struct batched_forward_mask_bias_dropout_dispatch {
 
     dim3 kGridSize =
         FmhaFwdKernel::GridSize(param.B, param.Hq, param.M, param.Kv, false);
-    constexpr dim3 kBlockSize = FmhaFwdKernel::BlockSize();
+    dim3 kBlockSize = FmhaFwdKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaFwdKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(

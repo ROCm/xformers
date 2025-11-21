@@ -73,7 +73,7 @@ at::Tensor rand_uniform_int(
         {philox_seed, philox_offset});
 
     dim3 kGridSize = FmhaRandUniformKernel_::GridSize(B, num_heads, M, N);
-    constexpr dim3 kBlockSize = FmhaRandUniformKernel_::BlockSize();
+    dim3 kBlockSize = FmhaRandUniformKernel_::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu =
         FmhaRandUniformKernel_::kBlockPerCu;
 
