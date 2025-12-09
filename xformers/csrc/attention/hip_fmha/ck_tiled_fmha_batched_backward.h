@@ -27,6 +27,8 @@ struct batched_backward_mask_bias_dropout_dispatch {
   using FmhaBlockDropout =
       typename FmhaBwdBlockDropoutMaker<kHasDropout, MaxK>::dropout;
 
+  using FmhaShape = typename FmhaBwdShape<MaxK>::Type;
+
   template <typename FmhaTraits, typename FmhaMask>
   using FmhaBwdPipelineProblemTemp = ck_tile::BlockFmhaBwdPipelineProblem<
       typename FmhaBwdTypeConfig<ScalarType>::QDataType,
@@ -44,7 +46,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
       typename FmhaBwdTypeConfig<ScalarType>::KGradDataType,
       typename FmhaBwdTypeConfig<ScalarType>::VGradDataType,
       typename FmhaBwdTypeConfig<ScalarType>::BiasGradDataType,
-      FmhaBwdShape<MaxK>,
+      FmhaShape,
       false, // kIsGroupMode
       false, // kIsDeterministic
       FmhaMask,
@@ -102,10 +104,8 @@ struct batched_backward_mask_bias_dropout_dispatch {
           ? ck_tile::BlockAttentionBiasEnum::ELEMENTWISE_BIAS
           : ck_tile::BlockAttentionBiasEnum::NO_BIAS;
 
-      const bool pad_headdim_q =
-          !(param.K % FmhaBwdShape<MaxK>::kQKHeaddim == 0);
-      const bool pad_headdim_v =
-          !(param.Kv % FmhaBwdShape<MaxK>::kVHeaddim == 0);
+      const bool pad_headdim_q = !(param.K % FmhaShape::kQKHeaddim == 0);
+      const bool pad_headdim_v = !(param.Kv % FmhaShape::kVHeaddim == 0);
 
       BOOL_SWITCH_2(
           pad_headdim_q, kPadHeadDimQ, pad_headdim_v, kPadHeadDimV, [&] {
@@ -167,8 +167,8 @@ struct batched_backward_mask_bias_dropout_dispatch {
                     typename FmhaBwdTypeConfig<ScalarType>::AccDataType,
                     typename FmhaBwdTypeConfig<ScalarType>::QGradDataType,
                     kBlockSize,
-                    FmhaBwdShape<MaxK>::kM0,
-                    FmhaBwdShape<MaxK>::kN0,
+                    FmhaShape::kM0,
+                    FmhaShape::kN0,
                     MaxK, // kQKHeaddim
                     false, // kIsGroupMode
                     false, // kIsDeterministic
