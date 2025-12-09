@@ -10,6 +10,7 @@
 #include <ck_tile/ops/fmha.hpp>
 #include "ck_fmha_util.h"
 #include "ck_tiled_fmha_fwd_type_config.h"
+#include "ck_tiled_fmha_warp_tile_define.h"
 
 template <ck_tile::index_t MaxK, ck_tile::index_t MTile = 0>
 struct FmhaFwdBlockTile;
@@ -75,10 +76,6 @@ struct FmhaFwdBlockTile<512, MTile> {
 
 template struct FmhaFwdBlockTile<512>;
 
-using FmhaFwdWarpTile1 = ck_tile::sequence<32, 32, 16>;
-using FmhaFwdWarpTile2 = ck_tile::sequence<16, 16, 16>;
-using FmhaFwdWarpTile3 = ck_tile::sequence<16, 16, 32>;
-
 template <ck_tile::index_t MaxK, ck_tile::index_t MTile>
 struct FmhaFwdShape;
 
@@ -87,9 +84,9 @@ struct FmhaFwdShape<32, MTile> {
   using Type = ck_tile::TileFmhaShape<
       typename FmhaFwdBlockTile<32>::type,
       typename FmhaFwdBlockTile<32>::gemm0_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       typename FmhaFwdBlockTile<32>::gemm1_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       IsVLayoutRowMajor>;
 };
 
@@ -101,9 +98,9 @@ struct FmhaFwdShape<64, MTile> {
   using Type = ck_tile::TileFmhaShape<
       typename FmhaFwdBlockTile<64>::type,
       typename FmhaFwdBlockTile<64>::gemm0_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       typename FmhaFwdBlockTile<64>::gemm1_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       IsVLayoutRowMajor>;
 };
 
@@ -115,9 +112,9 @@ struct FmhaFwdShape<96, MTile> {
   using Type = ck_tile::TileFmhaShape<
       typename FmhaFwdBlockTile<96>::type,
       typename FmhaFwdBlockTile<96>::gemm0_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       typename FmhaFwdBlockTile<96>::gemm1_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       IsVLayoutRowMajor>;
 };
 
@@ -129,9 +126,9 @@ struct FmhaFwdShape<128, 64> {
   using Type = ck_tile::TileFmhaShape<
       typename FmhaFwdBlockTile<128, 64>::type,
       typename FmhaFwdBlockTile<128, 64>::gemm0_warps,
-      FmhaFwdWarpTile3,
+      WarpTile_16x16x32,
       typename FmhaFwdBlockTile<128, 64>::gemm1_warps,
-      FmhaFwdWarpTile2,
+      WarpTile_16x16x16,
       IsVLayoutRowMajor>;
 };
 
@@ -140,9 +137,9 @@ struct FmhaFwdShape<128, 128> {
   using Type = ck_tile::TileFmhaShape<
       typename FmhaFwdBlockTile<128, 128>::type,
       typename FmhaFwdBlockTile<128, 128>::gemm0_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       typename FmhaFwdBlockTile<128, 128>::gemm1_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       IsVLayoutRowMajor>;
 };
 
@@ -151,9 +148,9 @@ struct FmhaFwdShape<256, MTile> {
   using Type = ck_tile::TileFmhaShape<
       typename FmhaFwdBlockTile<256>::type,
       typename FmhaFwdBlockTile<256>::gemm0_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       typename FmhaFwdBlockTile<256>::gemm1_warps,
-      FmhaFwdWarpTile1,
+      WarpTile_32x32x16,
       IsVLayoutRowMajor>;
 };
 
@@ -165,9 +162,9 @@ struct FmhaFwdShape<512, MTile> {
   using Type = ck_tile::TileFmhaShape<
       typename FmhaFwdBlockTile<512>::type,
       typename FmhaFwdBlockTile<512>::gemm0_warps,
-      FmhaFwdWarpTile2,
+      WarpTile_16x16x16,
       typename FmhaFwdBlockTile<512>::gemm1_warps,
-      FmhaFwdWarpTile2,
+      WarpTile_16x16x16,
       IsVLayoutRowMajor>;
 };
 
@@ -179,30 +176,28 @@ template struct FmhaFwdShape<512, 128>;
 #if defined(FMHA_BUILD_ON_GFX950)
 struct FmhaFwdSpecificShapeForV3 {
   using block_tile = ck_tile::sequence<256, 32, 128, 128, 32, 128>;
-  using warp_tile = ck_tile::sequence<32, 32, 16>;
   using gemm_warps = ck_tile::sequence<8, 1, 1>;
 
   using shape = ck_tile::TileFmhaShape<
       block_tile,
       gemm_warps,
-      warp_tile,
+      WarpTile_32x32x16,
       gemm_warps,
-      warp_tile,
+      WarpTile_32x32x16,
       true // IsVLayoutRowMajor
       >;
 };
 
 struct FmhaFwdSpecificShapeForQRAsyncTrload {
   using block_tile = ck_tile::sequence<64, 128, 32, 128, 32, 128>;
-  using warp_tile = ck_tile::sequence<16, 16, 32>;
   using gemm_warps = ck_tile::sequence<4, 1, 1>;
 
   using shape = ck_tile::TileFmhaShape<
       block_tile,
       gemm_warps,
-      warp_tile,
+      WarpTile_16x16x32,
       gemm_warps,
-      warp_tile,
+      WarpTile_16x16x32,
       true // IsVLayoutRowMajor
       >;
 };
