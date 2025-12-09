@@ -24,8 +24,6 @@ struct FmhaFwdBlockTile<32, MTile> {
   using gemm1_warps = ck_tile::sequence<2, 1, 1>;
 };
 
-template struct FmhaFwdBlockTile<32>;
-
 template <ck_tile::index_t MTile>
 struct FmhaFwdBlockTile<64, MTile> {
   using type = ck_tile::sequence<128, 64, 32, 64, 32, 64>;
@@ -33,16 +31,12 @@ struct FmhaFwdBlockTile<64, MTile> {
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
 
-template struct FmhaFwdBlockTile<64>;
-
 template <ck_tile::index_t MTile>
 struct FmhaFwdBlockTile<96, MTile> {
   using type = ck_tile::sequence<128, 128, 32, 128, 32, 96>;
   using gemm0_warps = ck_tile::sequence<4, 1, 1>;
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
-
-template struct FmhaFwdBlockTile<96>;
 
 template <>
 struct FmhaFwdBlockTile<128, 64> {
@@ -65,16 +59,12 @@ struct FmhaFwdBlockTile<256, MTile> {
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
 
-template struct FmhaFwdBlockTile<256>;
-
 template <ck_tile::index_t MTile>
 struct FmhaFwdBlockTile<512, MTile> {
   using type = ck_tile::sequence<64, 128, 32, 512, 32, 512>;
   using gemm0_warps = ck_tile::sequence<4, 1, 1>;
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
-
-template struct FmhaFwdBlockTile<512>;
 
 template <ck_tile::index_t MaxK, ck_tile::index_t MTile>
 struct FmhaFwdShape;

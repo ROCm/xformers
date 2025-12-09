@@ -24,8 +24,6 @@ struct FmhaFwdSplitKVBlockTile<32, MaxSeqLenQ> {
   using gemm1_warps = ck_tile::sequence<2, 1, 1>;
 };
 
-template struct FmhaFwdSplitKVBlockTile<32>;
-
 template <ck_tile::index_t MaxSeqLenQ>
 struct FmhaFwdSplitKVBlockTile<64, MaxSeqLenQ> {
   using type = ck_tile::sequence<32, 64, 32, 64, 32, 64>;
@@ -33,16 +31,12 @@ struct FmhaFwdSplitKVBlockTile<64, MaxSeqLenQ> {
   using gemm1_warps = ck_tile::sequence<2, 1, 1>;
 };
 
-template struct FmhaFwdSplitKVBlockTile<64>;
-
 template <ck_tile::index_t MaxSeqLenQ>
 struct FmhaFwdSplitKVBlockTile<96, MaxSeqLenQ> {
   using type = ck_tile::sequence<64, 128, 32, 128, 32, 96>;
   using gemm0_warps = ck_tile::sequence<4, 1, 1>;
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
-
-template struct FmhaFwdSplitKVBlockTile<96>;
 
 template <>
 struct FmhaFwdSplitKVBlockTile<128, 32> {
@@ -64,8 +58,6 @@ struct FmhaFwdSplitKVBlockTile<256, MaxSeqLenQ> {
   using gemm0_warps = ck_tile::sequence<4, 1, 1>;
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
-
-template struct FmhaFwdSplitKVBlockTile<256>;
 
 template <ck_tile::index_t MaxK, ck_tile::index_t MaxSeqLenQ>
 struct FmhaFwdSplitKVShape;
