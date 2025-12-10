@@ -28,7 +28,6 @@ struct batched_infer_mask_bias_dropout_dispatch {
   static constexpr bool kUseWholeKPrefetchPipeline =
       (MaxK <= 128 && !kHasDropout);
 
-  using FmhaShape = typename FmhaFwdCommonShape<MaxK, MTile>::Type;
 #if defined(FMHA_BUILD_ON_GFX950)
   // seq_len runtime threshold for switching fmha_fwd_v3 and qr_async_tr_load
   // pipeline on gfx950.
@@ -40,16 +39,12 @@ struct batched_infer_mask_bias_dropout_dispatch {
       typename FmhaFwdSpecificShapeForQRAsyncTrload::shape;
 #endif
 
-  static constexpr ck_tile::index_t kKLoadLength =
-      (kUseWholeKPrefetchPipeline || MaxK > 256) ? FmhaShape::kQKHeaddim
-                                                 : FmhaShape::kSubQKHeaddim;
-
   template <typename FmhaTraits>
   using AttentionVariant = ck_tile::ComposedAttention<
       FmhaTraits::kHasLogitsSoftCap * ck_tile::LOGITS_SOFT_CAP,
       CK_TILE_FMHA_FWD_FAST_EXP2>;
 
-  template <typename FmhaTraits, typename FmhaMask>
+  template <typename FmhaShape, typename FmhaTraits, typename FmhaMask>
   using FmhaPipelineProblemTemp = ck_tile::BlockFmhaPipelineProblem<
       typename FmhaFwdTypeConfig<ScalarType>::QDataType,
       typename FmhaFwdTypeConfig<ScalarType>::KDataType,
@@ -116,14 +111,6 @@ struct batched_infer_mask_bias_dropout_dispatch {
     constexpr auto kBiasEnum = kHasBias
         ? ck_tile::BlockAttentionBiasEnum::ELEMENTWISE_BIAS
         : ck_tile::BlockAttentionBiasEnum::NO_BIAS;
-
-    const bool pad_seqlen_k = !(param.N % FmhaShape::kN0 == 0);
-    const bool pad_headdim_q = !(param.K % kKLoadLength == 0);
-    const bool pad_headdim_v = !(param.Kv % FmhaShape::kN1 == 0);
-
-    // no need to check seqlen_q since it is not used as fastest dim,
-    // buffer_load_dwordxx/buffer_store_dwordxx can handle oob access
-    constexpr bool kPadSeqLenQ = false;
 
 #if defined(FMHA_BUILD_ON_GFX950)
     // only use fmha_fwd_v3 and qr_async_trload pipeline with hdim=128
@@ -201,7 +188,26 @@ struct batched_infer_mask_bias_dropout_dispatch {
         (!kHasBias && (param.K % 8 == 0) && (param.Kv % 8 == 0) &&
          (MaxK <= 128 && MTile == 128));
 
+    // no need to check seqlen_q since it is not used as fastest dim,
+    // buffer_load_dwordxx/buffer_store_dwordxx can handle oob access
+    constexpr bool kPadSeqLenQ = false;
+
     if (!use_async_pipeline) {
+      using FmhaShape = decltype([&]() {
+        if constexpr (kUseWholeKPrefetchPipeline)
+          return typename FmhaFwdWholeKPrefetchShape<MaxK, MTile>::Type{};
+        else
+          return typename FmhaFwdCommonShape<MaxK, MTile>::Type{};
+      }());
+
+      constexpr ck_tile::index_t kKLoadLength =
+          (kUseWholeKPrefetchPipeline || MaxK > 256) ? FmhaShape::kQKHeaddim
+                                                     : FmhaShape::kSubQKHeaddim;
+
+      const bool pad_seqlen_k = !(param.N % FmhaShape::kN0 == 0);
+      const bool pad_headdim_q = !(param.K % kKLoadLength == 0);
+      const bool pad_headdim_v = !(param.Kv % FmhaShape::kN1 == 0);
+
       BOOL_SWITCH_3(
           pad_seqlen_k,
           kPadSeqLenK,
@@ -224,7 +230,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
                 occupancy>;
 
             using FmhaPipelineProblem =
-                FmhaPipelineProblemTemp<FmhaTraits, FmhaMask>;
+                FmhaPipelineProblemTemp<FmhaShape, FmhaTraits, FmhaMask>;
 
             using FmhaEpilogue =
                 ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
@@ -258,6 +264,10 @@ struct batched_infer_mask_bias_dropout_dispatch {
             }
           });
     } else {
+      using FmhaShape = typename FmhaFwdCommonShape<MaxK, MTile>::Type;
+
+      const bool pad_seqlen_k = !(param.N % FmhaShape::kN0 == 0);
+
       BOOL_SWITCH(pad_seqlen_k, kPadSeqLenK, [&] {
         if constexpr (MaxK <= 128 && MTile == 128) {
           using FmhaTraits = ck_tile::TileFmhaTraits<
@@ -274,7 +284,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
               occupancy>;
 
           using FmhaPipelineProblem =
-              FmhaPipelineProblemTemp<FmhaTraits, FmhaMask>;
+              FmhaPipelineProblemTemp<FmhaShape, FmhaTraits, FmhaMask>;
 
           using FmhaPipeline =
               ck_tile::BlockFmhaPipelineQRKSVSAsync<FmhaPipelineProblem>;
