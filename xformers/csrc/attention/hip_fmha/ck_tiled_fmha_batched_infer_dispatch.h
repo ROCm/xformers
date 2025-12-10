@@ -193,12 +193,10 @@ struct batched_infer_mask_bias_dropout_dispatch {
     constexpr bool kPadSeqLenQ = false;
 
     if (!use_async_pipeline) {
-      using FmhaShape = decltype([&]() {
-        if constexpr (kUseWholeKPrefetchPipeline)
-          return typename FmhaFwdWholeKPrefetchShape<MaxK, MTile>::Type{};
-        else
-          return typename FmhaFwdCommonShape<MaxK, MTile>::Type{};
-      }());
+      using FmhaShape = typename std::conditional_t<
+          kUseWholeKPrefetchPipeline,
+          FmhaFwdWholeKPrefetchShape<MaxK, MTile>,
+          FmhaFwdCommonShape<MaxK, MTile>>::Type;
 
       constexpr ck_tile::index_t kKLoadLength =
           (kUseWholeKPrefetchPipeline || MaxK > 256) ? FmhaShape::kQKHeaddim
