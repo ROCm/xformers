@@ -27,7 +27,7 @@ struct grouped_infer_pagedkv_mask_bias_dropout_dispatch {
       false * ck_tile::LOGITS_SOFT_CAP,
       CK_TILE_FMHA_FWD_FAST_EXP2>;
 
-  using FmhaTileShape = typename FmhaFwdShape<MaxK, MTile>::Type;
+  using FmhaShape = typename FmhaFwdCommonShape<MaxK, MTile>::Type;
 
   template <
       typename FmhaFwdPagedKVTraits,
@@ -45,7 +45,7 @@ struct grouped_infer_pagedkv_mask_bias_dropout_dispatch {
           typename FmhaFwdTypeConfig<ScalarType>::PDataType,
           typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
           ODataType,
-          FmhaTileShape,
+          FmhaShape,
           true, // kIsGroupMode
           fmha_variant,
           FmhaMask,
@@ -64,8 +64,8 @@ struct grouped_infer_pagedkv_mask_bias_dropout_dispatch {
       constexpr bool kPadSeqLenQ = true;
       constexpr bool kPadSeqLenK = true;
 
-      bool pad_headdim_q = !(param.K % FmhaTileShape::kSubQKHeaddim == 0);
-      bool pad_headdim_v = !(param.Kv % FmhaTileShape::kN1 == 0);
+      bool pad_headdim_q = !(param.K % FmhaShape::kSubQKHeaddim == 0);
+      bool pad_headdim_v = !(param.Kv % FmhaShape::kN1 == 0);
 
       BOOL_SWITCH_2(
           pad_headdim_q, kPadHeadDimQ, pad_headdim_v, kPadHeadDimV, [&] {

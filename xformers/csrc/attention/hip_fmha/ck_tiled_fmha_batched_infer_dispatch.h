@@ -28,7 +28,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
   static constexpr bool kUseWholeKPrefetchPipeline =
       (MaxK <= 128 && !kHasDropout);
 
-  using FmhaShape = typename FmhaFwdShape<MaxK, MTile>::Type;
+  using FmhaShape = typename FmhaFwdCommonShape<MaxK, MTile>::Type;
 #if defined(FMHA_BUILD_ON_GFX950)
   // seq_len runtime threshold for switching fmha_fwd_v3 and qr_async_tr_load
   // pipeline on gfx950.

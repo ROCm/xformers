@@ -24,6 +24,8 @@ template <
     ck_tile::index_t MaxK,
     ck_tile::index_t MTile>
 struct grouped_forward_mask_bias_dropout_dispatch {
+  using FmhaShape = typename FmhaFwdCommonShape<MaxK, MTile>::Type;
+
   template <typename FmhaTraits>
   using AttentionVariant = ck_tile::ComposedAttention<
       FmhaTraits::kHasLogitsSoftCap * ck_tile::LOGITS_SOFT_CAP,
@@ -42,7 +44,7 @@ struct grouped_forward_mask_bias_dropout_dispatch {
       typename FmhaFwdTypeConfig<ScalarType>::PDataType,
       typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
       typename FmhaFwdTypeConfig<ScalarType>::ODataType,
-      typename FmhaFwdShape<MaxK, MTile>::Type,
+      FmhaShape,
       true, // kIsGroupMode
       AttentionVariant<FmhaTraits>,
       FmhaMask,
@@ -51,8 +53,6 @@ struct grouped_forward_mask_bias_dropout_dispatch {
 
   static void Run(GroupedForwardParams& param, hipStream_t stream) {
     using FmhaMask = ck_tile::SimplifiedGenericAttentionMask<kHasMask>;
-
-    using FmhaFwdShape_ = typename FmhaFwdShape<MaxK, MTile>::Type;
 
     constexpr ck_tile::index_t occupancy = (MaxK == 64) ? 3
         : (MaxK >= 256)                                 ? 1
@@ -65,8 +65,8 @@ struct grouped_forward_mask_bias_dropout_dispatch {
     constexpr bool kPadSeqLenQ = true;
     constexpr bool kPadSeqLenK = true;
 
-    const bool pad_headdim_q = !(param.K % FmhaFwdShape_::kSubQKHeaddim == 0);
-    const bool pad_headdim_v = !(param.Kv % FmhaFwdShape_::kN1 == 0);
+    const bool pad_headdim_q = !(param.K % FmhaShape::kSubQKHeaddim == 0);
+    const bool pad_headdim_v = !(param.Kv % FmhaShape::kN1 == 0);
 
     BOOL_SWITCH_2(
         pad_headdim_q, kPadHeadDimQ, pad_headdim_v, kPadHeadDimV, [&] {

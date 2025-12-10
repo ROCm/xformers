@@ -53,6 +53,8 @@ struct FmhaBwdTypeConfig<ck_tile::bf16_t> {
   using BiasGradDataType = ck_tile::bf16_t;
 };
 
+namespace detail {
+
 template <ck_tile::index_t MaxK>
 struct FmhaBwdBlockTile;
 
@@ -98,86 +100,88 @@ struct FmhaBwdBlockTile<256> {
   using gemm4_warps = ck_tile::sequence<1, 4, 1>; // default for gemm4
 };
 
+}; // namespace detail
+
 template <ck_tile::index_t MaxK>
 struct FmhaBwdShape;
 
 template <>
 struct FmhaBwdShape<32> {
   using Type = ck_tile::TileFmhaBwdShape<
-      typename FmhaBwdBlockTile<32>::tile_lengths,
-      typename FmhaBwdBlockTile<32>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<32>::tile_lengths,
+      typename detail::FmhaBwdBlockTile<32>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<32>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<32>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<32>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<32>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<32>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<32>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<32>::gemm4_warps,
+      typename detail::FmhaBwdBlockTile<32>::gemm4_warps,
       WarpTile_16x16x32>;
 };
 
 template <>
 struct FmhaBwdShape<64> {
   using Type = ck_tile::TileFmhaBwdShape<
-      typename FmhaBwdBlockTile<64>::tile_lengths,
-      typename FmhaBwdBlockTile<64>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<64>::tile_lengths,
+      typename detail::FmhaBwdBlockTile<64>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<64>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<64>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<64>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<64>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<64>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<64>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<64>::gemm4_warps,
+      typename detail::FmhaBwdBlockTile<64>::gemm4_warps,
       WarpTile_16x16x32>;
 };
 
 template <>
 struct FmhaBwdShape<96> {
   using Type = ck_tile::TileFmhaBwdShape<
-      typename FmhaBwdBlockTile<96>::tile_lengths,
-      typename FmhaBwdBlockTile<96>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<96>::tile_lengths,
+      typename detail::FmhaBwdBlockTile<96>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<96>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<96>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<96>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<96>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<96>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<96>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<96>::gemm4_warps,
+      typename detail::FmhaBwdBlockTile<96>::gemm4_warps,
       WarpTile_16x16x32>;
 };
 
 template <>
 struct FmhaBwdShape<128> {
   using Type = ck_tile::TileFmhaBwdShape<
-      typename FmhaBwdBlockTile<128>::tile_lengths,
-      typename FmhaBwdBlockTile<128>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<128>::tile_lengths,
+      typename detail::FmhaBwdBlockTile<128>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<128>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<128>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<128>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<128>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<128>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<128>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<128>::gemm4_warps,
+      typename detail::FmhaBwdBlockTile<128>::gemm4_warps,
       WarpTile_16x16x32>;
 };
 
 template <>
 struct FmhaBwdShape<256> {
   using Type = ck_tile::TileFmhaBwdShape<
-      typename FmhaBwdBlockTile<256>::tile_lengths,
-      typename FmhaBwdBlockTile<256>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<256>::tile_lengths,
+      typename detail::FmhaBwdBlockTile<256>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<256>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<256>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<256>::gemm02_warps,
+      typename detail::FmhaBwdBlockTile<256>::gemm02_warps,
       WarpTile_16x16x32,
-      typename FmhaBwdBlockTile<256>::gemm13_warps,
+      typename detail::FmhaBwdBlockTile<256>::gemm13_warps,
       WarpTile_16x16x16,
-      typename FmhaBwdBlockTile<256>::gemm4_warps,
+      typename detail::FmhaBwdBlockTile<256>::gemm4_warps,
       WarpTile_16x16x32>;
 };
 
