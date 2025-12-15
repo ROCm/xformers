@@ -200,11 +200,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
           FmhaFwdWholeKPrefetchShape<MaxK, MTile>,
           FmhaFwdCommonShape<MaxK, MTile>>::Type;
 
-      constexpr ck_tile::index_t kKLoadLength =
-          (kUseWholeKPrefetchPipeline || MaxK > 256) ? FmhaShape::kQKHeaddim
-                                                     : FmhaShape::kSubQKHeaddim;
-
-      const bool pad_headdim_q = !(param.K % kKLoadLength == 0);
+      const bool pad_headdim_q = !(param.K % FmhaShape::kSubQKHeaddim == 0);
       const bool pad_headdim_v = !(param.Kv % FmhaShape::kN1 == 0);
 
       BOOL_SWITCH_2(
