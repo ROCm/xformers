@@ -200,8 +200,15 @@ struct grouped_infer_mask_bias_dropout_dispatch {
           FmhaFwdWholeKPrefetchShape<MaxK, MTile>,
           FmhaFwdCommonShape<MaxK, MTile>>::Type;
 
-      const bool pad_headdim_q = !(param.K % FmhaShape::kSubQKHeaddim == 0);
       const bool pad_headdim_v = !(param.Kv % FmhaShape::kN1 == 0);
+
+      const bool pad_headdim_q = [&]() {
+        // qr_ks_vs_whole_k_prefetch pipeline naively support hdim96/hdim160
+        if constexpr (kUseWholeKPrefetchPipeline)
+          return !(param.K % FmhaShape::kQKHeaddim == 0);
+        else
+          return !(param.K % FmhaShape::kSubQKHeaddim == 0);
+      }();
 
       BOOL_SWITCH_2(
           pad_headdim_q, kPadHeadDimQ, pad_headdim_v, kPadHeadDimV, [&] {

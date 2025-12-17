@@ -200,8 +200,15 @@ struct batched_infer_mask_bias_dropout_dispatch {
           FmhaFwdCommonShape<MaxK, MTile>>::Type;
 
       const bool pad_seqlen_k = !(param.N % FmhaShape::kN0 == 0);
-      const bool pad_headdim_q = !(param.K % FmhaShape::kSubQKHeaddim == 0);
       const bool pad_headdim_v = !(param.Kv % FmhaShape::kN1 == 0);
+
+      const bool pad_headdim_q = [&]() {
+        // qr_ks_vs_whole_k_prefetch pipeline naively support hdim96/hdim160
+        if constexpr (kUseWholeKPrefetchPipeline)
+          return !(param.K % FmhaShape::kQKHeaddim == 0);
+        else
+          return !(param.K % FmhaShape::kSubQKHeaddim == 0);
+      }();
 
       BOOL_SWITCH_3(
           pad_seqlen_k,
