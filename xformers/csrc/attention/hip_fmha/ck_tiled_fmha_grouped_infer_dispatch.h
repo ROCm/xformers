@@ -29,6 +29,12 @@ struct grouped_infer_mask_bias_dropout_dispatch {
       (MaxK <= 128 && !kHasDropout);
 
 #if defined(FMHA_BUILD_ON_GFX950)
+  static constexpr bool kTrLoadAvailable = true;
+#else
+  static constexpr bool kTrLoadAvailable = false;
+#endif
+
+#if defined(FMHA_BUILD_ON_GFX950)
   // seq_len runtime threshold for switching fmha_fwd_v3 and qr_async_tr_load
   // pipeline on gfx950.
   // Note: this number need to be tuned if we want to get better performance
@@ -43,7 +49,11 @@ struct grouped_infer_mask_bias_dropout_dispatch {
       FmhaTraits::kHasLogitsSoftCap * ck_tile::LOGITS_SOFT_CAP,
       CK_TILE_FMHA_FWD_FAST_EXP2>;
 
-  template <typename FmhaShape, typename FmhaTraits, typename FmhaMask>
+  template <
+      typename FmhaShape,
+      typename FmhaTraits,
+      typename FmhaMask,
+      bool kUseTrLoad>
   using FmhaPipelineProblemTemp = ck_tile::BlockFmhaPipelineProblem<
       typename FmhaFwdTypeConfig<ScalarType>::QDataType,
       typename FmhaFwdTypeConfig<ScalarType>::KDataType,
@@ -60,7 +70,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
       true, // kIsGroupMode
       AttentionVariant<FmhaTraits>,
       FmhaMask,
-      false, // kUseTrLoad
+      kUseTrLoad,
       FmhaTraits>;
 
 #if defined(FMHA_BUILD_ON_GFX950)
@@ -225,9 +235,6 @@ struct grouped_infer_mask_bias_dropout_dispatch {
                 ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
                 occupancy>;
 
-            using FmhaPipelineProblem =
-                FmhaPipelineProblemTemp<FmhaShape, FmhaTraits, FmhaMask>;
-
             using FmhaEpilogue =
                 ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
                     typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
@@ -236,14 +243,34 @@ struct grouped_infer_mask_bias_dropout_dispatch {
                     kPadHeadDimV>>;
 
             if constexpr (kUseWholeKPrefetchPipeline) {
-              using FmhaPipeline =
+              using FmhaPipelineProblem = std::conditional_t<
+                  kTrLoadAvailable,
+                  FmhaPipelineProblemTemp<
+                      FmhaShape,
+                      FmhaTraits,
+                      FmhaMask,
+                      true>,
+                  FmhaPipelineProblemTemp<
+                      FmhaShape,
+                      FmhaTraits,
+                      FmhaMask,
+                      false>>;
+              using FmhaPipeline = std::conditional_t<
+                  kTrLoadAvailable,
+                  ck_tile::BlockFmhaPipelineQRKSVSWholeKPrefetchTrLoad<
+                      FmhaPipelineProblem>,
                   ck_tile::BlockFmhaPipelineQRKSVSWholeKPrefetch<
-                      FmhaPipelineProblem>;
+                      FmhaPipelineProblem>>;
               using FmhaKernel =
                   ck_tile::FmhaFwdKernel<FmhaPipeline, FmhaEpilogue>;
 
               RunWithKernel<FmhaKernel>(param, stream);
             } else if constexpr (MaxK <= 256) {
+              using FmhaPipelineProblem = FmhaPipelineProblemTemp<
+                  FmhaShape,
+                  FmhaTraits,
+                  FmhaMask,
+                  false>;
               using FmhaPipeline =
                   ck_tile::BlockFmhaPipelineQRKSVS<FmhaPipelineProblem>;
               using FmhaKernel =
@@ -251,6 +278,11 @@ struct grouped_infer_mask_bias_dropout_dispatch {
 
               RunWithKernel<FmhaKernel>(param, stream);
             } else {
+              using FmhaPipelineProblem = FmhaPipelineProblemTemp<
+                  FmhaShape,
+                  FmhaTraits,
+                  FmhaMask,
+                  false>;
               using FmhaPipeline =
                   ck_tile::BlockFmhaPipelineQSKSVS<FmhaPipelineProblem>;
               using FmhaKernel =
@@ -277,7 +309,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
             occupancy>;
 
         using FmhaPipelineProblem =
-            FmhaPipelineProblemTemp<FmhaShape, FmhaTraits, FmhaMask>;
+            FmhaPipelineProblemTemp<FmhaShape, FmhaTraits, FmhaMask, false>;
 
         using FmhaPipeline =
             ck_tile::BlockFmhaPipelineQRKSVSAsync<FmhaPipelineProblem>;
