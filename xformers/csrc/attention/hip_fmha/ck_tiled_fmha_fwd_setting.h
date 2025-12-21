@@ -337,8 +337,7 @@ struct FmhaFwdCommonBlockTile<512, MTile> {
 // == 0)
 template <ck_tile::index_t MTile>
 struct FmhaFwdWholeKPrefetchBlockTile<32, MTile> {
-  using tile_lengths =
-      ck_tile::sequence<64, 64, 32, 32, 32, 32>; // N0Sub == 32 for N0loop
+  using tile_lengths = ck_tile::sequence<64, 64, 32, 32, 32, 32>;
   using gemm0_warps = ck_tile::sequence<2, 1, 1>;
   using gemm1_warps = ck_tile::sequence<2, 1, 1>;
 };
@@ -352,21 +351,21 @@ struct FmhaFwdWholeKPrefetchBlockTile<64, MTile> {
 
 template <ck_tile::index_t MTile>
 struct FmhaFwdWholeKPrefetchBlockTile<96, MTile> {
-  using tile_lengths = ck_tile::sequence<128, 128, 32, 128, 32, 96>;
+  using tile_lengths = ck_tile::sequence<128, 128, 16, 128, 32, 96>;
   using gemm0_warps = ck_tile::sequence<4, 1, 1>;
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
 
 template <>
 struct FmhaFwdWholeKPrefetchBlockTile<128, 64> {
-  using tile_lengths = ck_tile::sequence<64, 128, 16, 128, 16, 128>;
+  using tile_lengths = ck_tile::sequence<64, 128, 16, 128, 32, 128>;
   using gemm0_warps = ck_tile::sequence<4, 1, 1>;
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
 
 template <>
 struct FmhaFwdWholeKPrefetchBlockTile<128, 128> {
-  using tile_lengths = ck_tile::sequence<128, 128, 32, 128, 32, 128>;
+  using tile_lengths = ck_tile::sequence<128, 128, 16, 128, 16, 128>;
   using gemm0_warps = ck_tile::sequence<4, 1, 1>;
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
@@ -471,9 +470,9 @@ struct FmhaFwdWholeKPrefetchShape<32, MTile> {
   using Type = ck_tile::TileFmhaShape<
       typename detail::FmhaFwdWholeKPrefetchBlockTile<32>::tile_lengths,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<32>::gemm0_warps,
-      WarpTile_32x32x16,
+      WarpTile_16x16x32,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<32>::gemm1_warps,
-      WarpTile_32x32x16,
+      WarpTile_16x16x32,
       IsVLayoutRowMajor>;
 };
 
@@ -485,9 +484,9 @@ struct FmhaFwdWholeKPrefetchShape<64, MTile> {
   using Type = ck_tile::TileFmhaShape<
       typename detail::FmhaFwdWholeKPrefetchBlockTile<64>::tile_lengths,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<64>::gemm0_warps,
-      WarpTile_32x32x16,
+      WarpTile_16x16x32,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<64>::gemm1_warps,
-      WarpTile_32x32x16,
+      WarpTile_16x16x32,
       IsVLayoutRowMajor>;
 };
 
@@ -499,9 +498,9 @@ struct FmhaFwdWholeKPrefetchShape<96, MTile> {
   using Type = ck_tile::TileFmhaShape<
       typename detail::FmhaFwdWholeKPrefetchBlockTile<96>::tile_lengths,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<96>::gemm0_warps,
-      WarpTile_32x32x16,
+      WarpTile_16x16x32,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<96>::gemm1_warps,
-      WarpTile_32x32x16,
+      WarpTile_16x16x32,
       IsVLayoutRowMajor>;
 };
 
@@ -515,7 +514,7 @@ struct FmhaFwdWholeKPrefetchShape<128, 64> {
       typename detail::FmhaFwdWholeKPrefetchBlockTile<128, 64>::gemm0_warps,
       WarpTile_16x16x32,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<128, 64>::gemm1_warps,
-      WarpTile_16x16x16, // ToDo: 16x16x32 not good
+      WarpTile_16x16x32,
       IsVLayoutRowMajor>;
 };
 
@@ -524,9 +523,9 @@ struct FmhaFwdWholeKPrefetchShape<128, 128> {
   using Type = ck_tile::TileFmhaShape<
       typename detail::FmhaFwdWholeKPrefetchBlockTile<128, 128>::tile_lengths,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<128, 128>::gemm0_warps,
-      WarpTile_32x32x16,
+      WarpTile_16x16x32,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<128, 128>::gemm1_warps,
-      WarpTile_32x32x16,
+      WarpTile_16x16x16,
       IsVLayoutRowMajor>;
 };
 #endif
