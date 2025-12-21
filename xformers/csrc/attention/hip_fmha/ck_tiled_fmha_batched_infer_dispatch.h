@@ -204,7 +204,13 @@ struct batched_infer_mask_bias_dropout_dispatch {
     };
 #endif
 
-    // only use qr_ks_vs_async pipeline with hdim-96
+    const bool disable_async_pipeline = []() {
+      const char* env_p = std::getenv("FMHA_DISABLE_ASYNC_PIPELINE");
+      if (env_p == nullptr)
+        return false;
+      return static_cast<bool>(atoi(env_p));
+    }();
+
     const bool use_async_pipeline =
         (!kHasBias && (param.K % 8 == 0) && (param.Kv % 8 == 0) &&
          (MaxK <= 128 && MTile == 128));
@@ -213,7 +219,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
     // buffer_load_dwordxx/buffer_store_dwordxx can handle oob access
     constexpr bool kPadSeqLenQ = false;
 
-    if (!use_async_pipeline) {
+    if (!use_async_pipeline || disable_async_pipeline) {
       using FmhaShape = typename std::conditional_t<
           kUseWholeKPrefetchPipeline,
           FmhaFwdWholeKPrefetchShape<MaxK, MTile>,
