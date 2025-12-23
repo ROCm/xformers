@@ -365,7 +365,7 @@ struct FmhaFwdWholeKPrefetchBlockTile<128, 64> {
 
 template <>
 struct FmhaFwdWholeKPrefetchBlockTile<128, 128> {
-  using tile_lengths = ck_tile::sequence<128, 128, 16, 128, 16, 128>;
+  using tile_lengths = ck_tile::sequence<128, 64, 16, 128, 32, 128>;
   using gemm0_warps = ck_tile::sequence<4, 1, 1>;
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
@@ -525,7 +525,7 @@ struct FmhaFwdWholeKPrefetchShape<128, 128> {
       typename detail::FmhaFwdWholeKPrefetchBlockTile<128, 128>::gemm0_warps,
       WarpTile_16x16x32,
       typename detail::FmhaFwdWholeKPrefetchBlockTile<128, 128>::gemm1_warps,
-      WarpTile_16x16x16,
+      WarpTile_16x16x32,
       IsVLayoutRowMajor>;
 };
 #endif
