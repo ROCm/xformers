@@ -315,7 +315,7 @@ struct batched_forward_splitkv_smallq_mask_bias_dropout_dispatch {
 
     dim3 kGridSize = FmhaFwdSplitKVKernel::GridSize(
         param.B, param.Hq, param.Hkv, param.M, param.Kv, param.num_kv_splits);
-    constexpr dim3 kBlockSize = FmhaFwdSplitKVKernel::BlockSize();
+    dim3 kBlockSize = FmhaFwdSplitKVKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaFwdSplitKVKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(
@@ -355,7 +355,7 @@ struct batched_forward_splitkv_smallq_mask_bias_dropout_dispatch {
 
     dim3 kGridSize = FmhaSplitKVCombineKernel::GridSize(
         param.B, param.Hq, param.M, param.Kv);
-    constexpr dim3 kBlockSize = FmhaSplitKVCombineKernel::BlockSize();
+    dim3 kBlockSize = FmhaSplitKVCombineKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu =
         FmhaSplitKVCombineKernel::kBlockPerCu;
 

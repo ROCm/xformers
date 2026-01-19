@@ -28,7 +28,6 @@ struct grouped_infer_mask_bias_dropout_dispatch {
   static constexpr bool kUseWholeKPrefetchPipeline =
       (MaxK <= 128 && !kHasDropout);
 
-  using FmhaShape = typename FmhaFwdShape<MaxK, MTile>::Type;
 #if defined(FMHA_BUILD_ON_GFX950)
   // seq_len runtime threshold for switching fmha_fwd_v3 and qr_async_tr_load
   // pipeline on gfx950.
@@ -39,16 +38,12 @@ struct grouped_infer_mask_bias_dropout_dispatch {
       typename FmhaFwdSpecificShapeForQRAsyncTrload::shape;
 #endif
 
-  static constexpr ck_tile::index_t kKLoadLength =
-      (kUseWholeKPrefetchPipeline || MaxK > 256) ? FmhaShape::kQKHeaddim
-                                                 : FmhaShape::kSubQKHeaddim;
-
   template <typename FmhaTraits>
   using AttentionVariant = ck_tile::ComposedAttention<
       FmhaTraits::kHasLogitsSoftCap * ck_tile::LOGITS_SOFT_CAP,
       CK_TILE_FMHA_FWD_FAST_EXP2>;
 
-  template <typename FmhaTraits, typename FmhaMask>
+  template <typename FmhaShape, typename FmhaTraits, typename FmhaMask>
   using FmhaPipelineProblemTemp = ck_tile::BlockFmhaPipelineProblem<
       typename FmhaFwdTypeConfig<ScalarType>::QDataType,
       typename FmhaFwdTypeConfig<ScalarType>::KDataType,
@@ -116,14 +111,6 @@ struct grouped_infer_mask_bias_dropout_dispatch {
         ? ck_tile::BlockAttentionBiasEnum::ELEMENTWISE_BIAS
         : ck_tile::BlockAttentionBiasEnum::NO_BIAS;
 
-    // no need to check seqlen_q since it is not used as fastest dim,
-    // buffer_load_dwordxx/buffer_store_dwordxx can handle oob access
-    constexpr bool kPadSeqLenQ = false;
-    constexpr bool kPadSeqLenK = true;
-
-    bool pad_headdim_q = !(param.K % kKLoadLength == 0);
-    bool pad_headdim_v = !(param.Kv % FmhaShape::kN1 == 0);
-
 #if defined(FMHA_BUILD_ON_GFX950)
     // only use fmha_fwd_v3 and qr_async_trload pipeline with hdim=128
     if (param.K == 128 && param.Kv == 128) {
@@ -160,8 +147,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
         }
       } else {
         // use qr_async_trload pipeline if seqlen <= switch_seqlen_threshold
-        // for MTile <= 64, qr_ks_vs_whole_k_prefetch gives better performance
-        if constexpr (MaxK == 128 && MTile > 64) {
+        if constexpr (MaxK == 128) {
           using FmhaTraits = ck_tile::TileFmhaTraits<
               false, // kPadSeqLenQ,
               false, // kPadSeqLenK,
@@ -172,7 +158,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
               false, // kHasBiasGrad place-holder
               false, // kStoreLSE
               kHasDropout,
-              false, // kDoFp8StaticQuant place-holder
+              ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
               1 // Occupancy place-holder(-1 will make the build fail)
               >;
           using FmhaPipelineProblem =
@@ -197,12 +183,29 @@ struct grouped_infer_mask_bias_dropout_dispatch {
     }
 #endif
 
+    // no need to check seqlen_q since it is not used as fastest dim,
+    // buffer_load_dwordxx/buffer_store_dwordxx can handle oob access
+    constexpr bool kPadSeqLenQ = false;
+    constexpr bool kPadSeqLenK = true;
+
     // only use qr_ks_vs_async pipeline with hdim-96
     const bool use_async_pipeline =
         (!kHasBias && (param.K % 8 == 0) && (param.Kv % 8 == 0) &&
          (MaxK <= 128 && MTile == 128));
 
     if (!use_async_pipeline) {
+      using FmhaShape = typename std::conditional_t<
+          kUseWholeKPrefetchPipeline,
+          FmhaFwdWholeKPrefetchShape<MaxK, MTile>,
+          FmhaFwdCommonShape<MaxK, MTile>>::Type;
+
+      constexpr ck_tile::index_t kKLoadLength =
+          (kUseWholeKPrefetchPipeline || MaxK > 256) ? FmhaShape::kQKHeaddim
+                                                     : FmhaShape::kSubQKHeaddim;
+
+      const bool pad_headdim_q = !(param.K % kKLoadLength == 0);
+      const bool pad_headdim_v = !(param.Kv % FmhaShape::kN1 == 0);
+
       BOOL_SWITCH_2(
           pad_headdim_q, kPadHeadDimQ, pad_headdim_v, kPadHeadDimV, [&] {
             using FmhaTraits = ck_tile::TileFmhaTraits<
@@ -215,11 +218,11 @@ struct grouped_infer_mask_bias_dropout_dispatch {
                 false, // kHasBiasGrad place-holder
                 false, // kStoreLSE
                 kHasDropout,
-                false, // kDoFp8StaticQuant place-holder
+                ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
                 occupancy>;
 
             using FmhaPipelineProblem =
-                FmhaPipelineProblemTemp<FmhaTraits, FmhaMask>;
+                FmhaPipelineProblemTemp<FmhaShape, FmhaTraits, FmhaMask>;
 
             using FmhaEpilogue =
                 ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
@@ -254,6 +257,8 @@ struct grouped_infer_mask_bias_dropout_dispatch {
           });
     } else {
       if constexpr (MaxK <= 128 && MTile == 128) {
+        using FmhaShape = typename FmhaFwdCommonShape<MaxK, MTile>::Type;
+
         using FmhaTraits = ck_tile::TileFmhaTraits<
             true, // kPadSeqLenQ,
             kPadSeqLenK,
@@ -264,11 +269,11 @@ struct grouped_infer_mask_bias_dropout_dispatch {
             false, // kHasBiasGrad place-holder
             false, // kStoreLSE
             kHasDropout,
-            false, // kDoFp8StaticQuant place-holder
+            ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
             occupancy>;
 
         using FmhaPipelineProblem =
-            FmhaPipelineProblemTemp<FmhaTraits, FmhaMask>;
+            FmhaPipelineProblemTemp<FmhaShape, FmhaTraits, FmhaMask>;
 
         using FmhaPipeline =
             ck_tile::BlockFmhaPipelineQRKSVSAsync<FmhaPipelineProblem>;
@@ -297,19 +302,21 @@ struct grouped_infer_mask_bias_dropout_dispatch {
           param.k_ptr,
           param.v_ptr,
           param.attn_bias_ptr,
+          nullptr, // q_descale_ptr
+          nullptr, // k_descale_ptr
+          nullptr, // v_descale_ptr
           nullptr, // rand_val_ptr
           nullptr, // lse_ptr
           param.out_ptr,
           param.seqstart_q_dev_ptr,
           param.seqstart_k_dev_ptr,
+          nullptr, // seqlen_q_ptr, most recently added kernel argument
           param.seqlen_k_dev_ptr,
           param.K, // hdim_q
           param.Kv, // hdim_v
           param.Hq, // nhead_q
           param.Hq / param.Hkv, // nhead_ratio_qk
           param.scale,
-          1.0f, // scale_p
-          1.0f, // scale_o
           0.f, // logits_soft_cap
           param.q_strides[0], // q, k, v, bias, randval, out tensor seq-dim
                               // stride
@@ -342,7 +349,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
         param.max_seqlen_q,
         param.Kv,
         param.seqlen_k_dev_ptr != nullptr);
-    constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
+    dim3 kBlockSize = FmhaKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(
@@ -401,7 +408,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
 
     dim3 kGridSize = FmhaKernel::GridSize(
         param.num_batches, param.Hq, param.max_seqlen_q, param.Kv);
-    constexpr dim3 kBlockSize = FmhaKernel::BlockSize();
+    dim3 kBlockSize = FmhaKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(

@@ -27,6 +27,8 @@ struct grouped_backward_mask_bias_dropout_dispatch {
   using FmhaBlockDropout =
       typename FmhaBwdBlockDropoutMaker<kHasDropout, MaxK>::dropout;
 
+  using FmhaShape = typename FmhaBwdShape<MaxK>::Type;
+
   template <typename FmhaTraits, typename FmhaMask>
   using FmhaBwdPipelineProblemTemp = ck_tile::BlockFmhaBwdPipelineProblem<
       typename FmhaBwdTypeConfig<ScalarType>::QDataType,
@@ -44,7 +46,7 @@ struct grouped_backward_mask_bias_dropout_dispatch {
       typename FmhaBwdTypeConfig<ScalarType>::KGradDataType,
       typename FmhaBwdTypeConfig<ScalarType>::VGradDataType,
       typename FmhaBwdTypeConfig<ScalarType>::BiasGradDataType,
-      FmhaBwdShape<MaxK>,
+      FmhaShape,
       true, // kIsGroupMode
       false, // non-deterministic
       FmhaMask,
@@ -100,28 +102,17 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           ? ck_tile::BlockAttentionBiasEnum::ELEMENTWISE_BIAS
           : ck_tile::BlockAttentionBiasEnum::NO_BIAS;
 
-      const bool pad_headdim_q =
-          !(param.K % FmhaBwdShape<MaxK>::kQKHeaddim == 0);
-      const bool pad_headdim_v =
-          !(param.Kv % FmhaBwdShape<MaxK>::kVHeaddim == 0);
+      const bool pad_headdim_q = !(param.K % FmhaShape::kQKHeaddim == 0);
+      const bool pad_headdim_v = !(param.Kv % FmhaShape::kVHeaddim == 0);
 
       BOOL_SWITCH_2(
           pad_headdim_q, kPadHeadDimQ, pad_headdim_v, kPadHeadDimV, [&] {
-            using FmhaBwdTraits_ = ck_tile::TileFmhaTraits<
-                false, // kPadSeqLenQ, not used
-                false, // kPadSeqLenK, not used
+            using FmhaBwdTraits_ = ck_tile::TileFmhaBwdTraits<
                 kPadHeadDimQ,
                 kPadHeadDimV,
-                false, // kHasLogitsSoftCap
                 kBiasEnum,
                 kHasBiasGrad,
-                false, // kStoreLSE
-                false, // place-holder for kHasDropout, not used actually
-                false, // kDoFp8StaticQuant place-holder
                 occupancy>;
-
-            using FmhaBwdPipelineProblem =
-                FmhaBwdPipelineProblemTemp<FmhaBwdTraits_, FmhaMask>;
 
             using FmhaBwdPipelineProblem =
                 FmhaBwdPipelineProblemTemp<FmhaBwdTraits_, FmhaMask>;
@@ -206,6 +197,8 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           param.dot_out_ptr,
           1.0f - param.dropout_prob,
           param.seqstart_q_dev_ptr,
+          nullptr, // seqlen_q_ptr, most recently added kernel argument
+          nullptr, // cu_seqlen_q_ptr, most recently added kernel argument
           param.Kv,
           param.grad_out_strides[0], // stride_do
           param.out_strides[0], // stride_o
@@ -216,7 +209,7 @@ struct grouped_backward_mask_bias_dropout_dispatch {
 
     dim3 kGridSize = FmhaBwdOGradDotOKernel::GridSize(
         param.num_batches, param.Hq, param.max_seqlen_q);
-    constexpr dim3 kBlockSize = FmhaBwdOGradDotOKernel::BlockSize();
+    dim3 kBlockSize = FmhaBwdOGradDotOKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu =
         FmhaBwdOGradDotOKernel::kBlockPerCu;
 
@@ -246,7 +239,10 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           NeedConvertGradQ ? param.grad_q_f32_ptr : param.grad_q_ptr,
           param.seqstart_q_dev_ptr,
           param.seqstart_k_dev_ptr,
+          nullptr, // seqlen_q_ptr, most recently added kernel argument
           param.seqlen_k_dev_ptr,
+          nullptr, // cu_seqlen_q_ptr, most recently added kernel argument
+          nullptr, // cu_seqlen_k_ptr, most recently added kernel argument
           param.K,
           param.Kv,
           param.Hq,
@@ -288,7 +284,7 @@ struct grouped_backward_mask_bias_dropout_dispatch {
 
     dim3 kGridSize = FmhaBwdDQDKDVKernel::GridSize(
         param.num_batches, param.Hq, param.max_seqlen_k);
-    constexpr dim3 kBlockSize = FmhaBwdDQDKDVKernel::BlockSize();
+    dim3 kBlockSize = FmhaBwdDQDKDVKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaBwdDQDKDVKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(
@@ -307,6 +303,10 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           param.grad_q_ptr,
           param.seqstart_q_dev_ptr,
           param.seqstart_k_dev_ptr,
+          nullptr, // seqlen_q_ptr, most recently added kernel argument
+          param.seqlen_k_dev_ptr, // most recently used kernel argument
+          nullptr, // cu_seqlen_q_ptr, most recently added kernel argument
+          nullptr, // cu_seqlen_k_ptr, most recently added kernel argument
           param.K, // headdim of q/k
           param.q_strides[0],
           param.grad_q_f32_strides[0],
@@ -317,7 +317,7 @@ struct grouped_backward_mask_bias_dropout_dispatch {
 
     dim3 kGridSize = FmhaBwdConvertQGradKernel::GridSize(
         param.num_batches, param.Hq, param.max_seqlen_q);
-    constexpr dim3 kBlockSize = FmhaBwdConvertQGradKernel::BlockSize();
+    dim3 kBlockSize = FmhaBwdConvertQGradKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu =
         FmhaBwdConvertQGradKernel::kBlockPerCu;
 

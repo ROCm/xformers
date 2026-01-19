@@ -298,7 +298,7 @@ struct grouped_forward_splitkv_mask_bias_dropout_dispatch {
         param.max_seqlen_q,
         param.Kv,
         param.num_kv_splits);
-    constexpr dim3 kBlockSize = FmhaFwdSplitKVKernel::BlockSize();
+    dim3 kBlockSize = FmhaFwdSplitKVKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu = FmhaFwdSplitKVKernel::kBlockPerCu;
 
     (void)ck_tile::launch_kernel(
@@ -334,7 +334,7 @@ struct grouped_forward_splitkv_mask_bias_dropout_dispatch {
 
     dim3 kGridSize = FmhaSplitKVCombineKernel::GridSize(
         param.num_batches, param.Hq, param.max_seqlen_q, param.Kv);
-    constexpr dim3 kBlockSize = FmhaSplitKVCombineKernel::BlockSize();
+    dim3 kBlockSize = FmhaSplitKVCombineKernel::BlockSize();
     constexpr ck_tile::index_t kBlockPerCu =
         FmhaSplitKVCombineKernel::kBlockPerCu;
 
