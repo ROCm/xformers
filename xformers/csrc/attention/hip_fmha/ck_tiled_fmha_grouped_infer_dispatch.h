@@ -209,8 +209,8 @@ struct grouped_infer_mask_bias_dropout_dispatch {
     constexpr bool kPadSeqLenQ = false;
     constexpr bool kPadSeqLenK = true;
 
-    const bool disable_async_pipeline = []() {
-      const char* env_p = std::getenv("FMHA_DISABLE_ASYNC_PIPELINE");
+    const bool enable_async_pipeline = []() {
+      const char* env_p = std::getenv("FMHA_ENABLE_ASYNC_PIPELINE");
       if (env_p == nullptr)
         return false;
       return static_cast<bool>(atoi(env_p));
@@ -218,9 +218,9 @@ struct grouped_infer_mask_bias_dropout_dispatch {
 
     const bool use_async_pipeline =
         (!kHasBias && (param.K % 8 == 0) && (param.Kv % 8 == 0) &&
-         (MaxK <= 128 && MTile == 128));
+         (MaxK <= 128 && MTile <= 128));
 
-    if (!use_async_pipeline || disable_async_pipeline) {
+    if (!(use_async_pipeline && enable_async_pipeline)) {
       using FmhaShape = typename std::conditional_t<
           kUseWholeKPrefetchPipeline,
           FmhaFwdWholeKPrefetchShape<MaxK, MTile>,
@@ -308,7 +308,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
             }
           });
     } else {
-      if constexpr (MaxK <= 128 && MTile == 128) {
+      if constexpr (MaxK <= 128 && MTile <= 128) {
         using FmhaShape = typename FmhaFwdCommonShape<MaxK, MTile>::Type;
 
         using FmhaTraits = ck_tile::TileFmhaTraits<

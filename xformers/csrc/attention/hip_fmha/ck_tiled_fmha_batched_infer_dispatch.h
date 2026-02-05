@@ -204,8 +204,8 @@ struct batched_infer_mask_bias_dropout_dispatch {
     };
 #endif
 
-    const bool disable_async_pipeline = []() {
-      const char* env_p = std::getenv("FMHA_DISABLE_ASYNC_PIPELINE");
+    const bool enable_async_pipeline = []() {
+      const char* env_p = std::getenv("FMHA_ENABLE_ASYNC_PIPELINE");
       if (env_p == nullptr)
         return false;
       return static_cast<bool>(atoi(env_p));
@@ -213,13 +213,13 @@ struct batched_infer_mask_bias_dropout_dispatch {
 
     const bool use_async_pipeline =
         (!kHasBias && (param.K % 8 == 0) && (param.Kv % 8 == 0) &&
-         (MaxK <= 128 && MTile == 128));
+         (MaxK <= 128 && MTile <= 128));
 
     // no need to check seqlen_q since it is not used as fastest dim,
     // buffer_load_dwordxx/buffer_store_dwordxx can handle oob access
     constexpr bool kPadSeqLenQ = false;
 
-    if (!use_async_pipeline || disable_async_pipeline) {
+    if (!(use_async_pipeline && enable_async_pipeline)) {
       using FmhaShape = typename std::conditional_t<
           kUseWholeKPrefetchPipeline,
           FmhaFwdWholeKPrefetchShape<MaxK, MTile>,
@@ -319,7 +319,7 @@ struct batched_infer_mask_bias_dropout_dispatch {
       const bool pad_seqlen_k = !(param.N % FmhaShape::kN0 == 0);
 
       BOOL_SWITCH(pad_seqlen_k, kPadSeqLenK, [&] {
-        if constexpr (MaxK <= 128 && MTile == 128) {
+        if constexpr (MaxK <= 128 && MTile <= 128) {
           using FmhaTraits = ck_tile::TileFmhaTraits<
               true, // kPadSeqLenQ,
               kPadSeqLenK,
