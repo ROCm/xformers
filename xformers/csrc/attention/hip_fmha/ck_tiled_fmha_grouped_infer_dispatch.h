@@ -75,19 +75,23 @@ struct grouped_infer_mask_bias_dropout_dispatch {
 
 #if defined(FMHA_BUILD_ON_GFX950)
   template <typename FmhaTraits, typename FmhaMask>
-  using FmhaPipelineProblemV3Temp = ck_tile::BlockFmhaFwdV3PipelineProblem<
+  using FmhaPipelineProblemV3Temp = ck_tile::BlockFmhaPipelineProblem<
       typename FmhaFwdTypeConfig<ScalarType>::QDataType,
       typename FmhaFwdTypeConfig<ScalarType>::KDataType,
       typename FmhaFwdTypeConfig<ScalarType>::VDataType,
       typename FmhaFwdTypeConfig<ScalarType>::SaccDataType,
       typename FmhaFwdTypeConfig<ScalarType>::SMPLComputeDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::BiasDataType,
+      typename FmhaFwdTypeConfig<ScalarType>::RandValOutputDataType,
       typename FmhaFwdTypeConfig<ScalarType>::LSEDataType,
       typename FmhaFwdTypeConfig<ScalarType>::PDataType,
       typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
       typename FmhaFwdTypeConfig<ScalarType>::ODataType,
       FmhaV3Shape,
       true, // kIsGroupMode
+      AttentionVariant<FmhaTraits>,
       FmhaMask,
+      false,
       FmhaTraits>;
 
   template <typename FmhaTraits, typename FmhaMask>
@@ -136,14 +140,20 @@ struct grouped_infer_mask_bias_dropout_dispatch {
         // type is 0(no_mask) or 2(bottom-right casual mask)
         if (param.M > switch_seqlen_threshold &&
             (param.custom_mask_type == 0 || param.custom_mask_type == 2)) {
-          if constexpr (MaxK == 128) {
-            using FmhaTraits = ck_tile::TileFmhaFwdV3Traits<
-                false, // kPadSeqLenQ
-                false, // kPadSeqLenK
-                false, // kPadHeadDimQ
-                false, // kPadHeadDimV
+          if constexpr (MaxK == 128 && !kHasDropout && !kHasBias) {
+            using FmhaTraits = ck_tile::TileFmhaTraits<
+                false, // kPadSeqLenQ,
+                false, // kPadSeqLenK,
+                false, // kPadHeadDimQ,
+                false, // kPadHeadDimV,
+                false, // kHasLogitsSoftCap
+                ck_tile::BlockAttentionBiasEnum::NO_BIAS,
+                false, // kHasBiasGrad place-holder
                 false, // kStoreLSE
-                occupancy>;
+                false, // kHasDropout
+                ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
+                1 // Occupancy place-holder(-1 will make the build fail)
+                >;
             using FmhaMaskForV3 =
                 ck_tile::GenericAttentionMask<kHasMask, false>;
             using FmhaPipelineProblem =
@@ -364,6 +374,8 @@ struct grouped_infer_mask_bias_dropout_dispatch {
           param.seqstart_k_dev_ptr,
           nullptr, // seqlen_q_ptr, most recently added kernel argument
           param.seqlen_k_dev_ptr,
+          nullptr, // block_scale_seqstart_q_ptr
+          nullptr, // block_scale_seqstart_k_ptr
           param.K, // hdim_q
           param.Kv, // hdim_v
           param.Hq, // nhead_q
@@ -385,14 +397,21 @@ struct grouped_infer_mask_bias_dropout_dispatch {
           0, // nhead_stride_randval
           0, // nhead_stride_lse
           param.out_strides[1],
+          0, // nhead_stride_q_descale
+          0, // nhead_stride_k_descale
+          0, // nhead_stride_v_descale
           (param.window_size > 0) ? param.window_size - 1
                                   : -1, // window_left_size
           (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+          0, // sink size
           param.custom_mask_type,
           0, // min_seqlen_q, most recently added kernel argument
           param.dropout_prob,
           false, // is_store_randval
-          std::make_pair(param.philox_seed, param.philox_offset));
+          std::make_pair(param.philox_seed, param.philox_offset),
+          0, // block_scale_size_q
+          0, // block_scale_size_kv
+      );
     }();
 
     dim3 kGridSize = FmhaKernel::GridSize(
@@ -434,12 +453,14 @@ struct grouped_infer_mask_bias_dropout_dispatch {
           param.out_ptr,
           param.seqstart_q_dev_ptr,
           param.seqstart_k_dev_ptr,
+          nullptr, // seqlen_q_ptr
           param.seqlen_k_dev_ptr,
           param.K, // hdim_q
           param.Kv, // hdim_v
           param.Hq, // nhead_q
           param.Hq / param.Hkv, // nhead_ratio_qk
           param.scale,
+          0.0f, // logits_soft_cap
           param.q_strides[0], // q, k, v, out tensor seq-dim
                               // stride
           param.k_strides[0],

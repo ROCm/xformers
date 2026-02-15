@@ -154,6 +154,9 @@ struct batched_forward_mask_bias_dropout_dispatch {
           0, // nhead_randva
           param.lse_strides[1], // nhead_stride_lse
           param.out_strides[2],
+          0, // nhead_stride_q_descale
+          0, // nhead_stride_k_descale
+          0, // nhead_stride_v_descale
           param.q_strides[0], // q, k, v, bias, randval, lse, out tensor
                               // batch-dim stride
           param.k_strides[0],
@@ -162,13 +165,20 @@ struct batched_forward_mask_bias_dropout_dispatch {
           0, // batch_stride_randval
           param.lse_strides[0], // batch_stride_lse
           param.out_strides[0],
+          0, // batch_stride_q_descale
+          0, // batch_stride_k_descale
+          0, // batch_stride_v_descale
           (param.window_size > 0) ? param.window_size - 1
                                   : -1, // window_left_size
           (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+          0, // sink size
           param.custom_mask_type,
           param.dropout_prob, // dropout ratio
           false, // is_store_randval
-          std::make_pair(param.philox_seed, param.philox_offset));
+          std::make_pair(param.philox_seed, param.philox_offset),
+          0, // block_scale_size_q
+          0, // block_scale_size_kv
+      );
     }();
 
     dim3 kGridSize =

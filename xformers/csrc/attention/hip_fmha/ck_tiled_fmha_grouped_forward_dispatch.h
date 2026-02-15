@@ -123,6 +123,8 @@ struct grouped_forward_mask_bias_dropout_dispatch {
           param.seqstart_k_dev_ptr,
           nullptr, // seqlen_q_ptr, most recently added kernel argument
           param.seqlen_k_dev_ptr,
+          nullptr, // block_scale_seqstart_q_ptr
+          nullptr, // block_scale_seqstart_k_ptr
           param.K, // hdim_q
           param.Kv, // hdim_v
           param.Hq, // nhead_q
@@ -144,14 +146,21 @@ struct grouped_forward_mask_bias_dropout_dispatch {
           0, // nhead_stride_randval
           param.lse_strides[0],
           param.out_strides[1],
+          0, // nhead_stride_q_descale
+          0, // nhead_stride_k_descale
+          0, // nhead_stride_v_descale
           (param.window_size > 0) ? param.window_size - 1
                                   : -1, // window_left_size
           (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+          0, // sink size
           param.custom_mask_type,
           0, // min_seqlen_q, most recently added kernel argument
           param.dropout_prob,
           false, // is_store_randval
-          std::make_pair(param.philox_seed, param.philox_offset));
+          std::make_pair(param.philox_seed, param.philox_offset),
+          0, // block_scale_size_q
+          0, // block_scale_size_kv
+      );
     }();
 
     dim3 kGridSize = FmhaFwdKernel::GridSize(
