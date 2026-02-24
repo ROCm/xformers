@@ -368,67 +368,64 @@ struct batched_infer_mask_bias_dropout_dispatch {
 
   template <typename FmhaKernel>
   static void RunWithKernel(BatchedForwardParams& param, hipStream_t stream) {
-    const auto kargs = [&] {
-      return FmhaKernel::MakeKargs(
-          param.q_ptr,
-          param.k_ptr,
-          param.v_ptr,
-          param.attn_bias_ptr,
-          nullptr, // q_descale_ptr
-          nullptr, // k_descale_ptr
-          nullptr, // v_descale_ptr
-          nullptr, // rand_val_ptr
-          nullptr, // lse_ptr
-          param.out_ptr,
-          param.M, // seqlen_q
-          param.N, // seqlen_k
-          param.K, // hdim_q
-          param.Kv, // hdim_v
-          param.Hq, // nhead_q
-          param.Hq / param.Hkv, // nhead_ratio_qk
-          param.scale,
-          0.0f, // logits_soft_cap
-          param.q_strides[1], // q, k, v, bias, randval, out tensor seq-dim
-                              // stride
-          param.k_strides[1],
-          param.v_strides[1],
-          param.attn_bias_strides[2],
-          0, // stride_randval
-          param.out_strides[1],
-          param.q_strides[2], // q, k, v, bias, randval, lse, out tensor
-                              // head-dim stride
-          param.k_strides[2],
-          param.v_strides[2],
-          param.attn_bias_strides[1],
-          0, // nhead_stride_randval
-          0, // nhead_stride_lse
-          param.out_strides[2],
-          0, // nhead_stride_q_descale
-          0, // nhead_stride_k_descale
-          0, // nhead_stride_v_descale
-          param.q_strides[0], // q, k, v, bias, randval, lse, out tensor
-                              // batch-dim stride
-          param.k_strides[0],
-          param.v_strides[0],
-          param.attn_bias_strides[0],
-          0, // batch_stride_randval
-          0, // batch_stride_lse
-          param.out_strides[0],
-          0, // batch_stride_q_descale
-          0, // batch_stride_k_descale
-          0, // batch_stride_v_descale
-          (param.window_size > 0) ? param.window_size - 1
-                                  : -1, // window_left_size
-          (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
-          0, // sink size
-          param.custom_mask_type,
-          param.dropout_prob, // dropout ratio
-          false, // is_store_randval
-          std::make_pair(param.philox_seed, param.philox_offset),
-          0, // block_scale_size_q
-          0, // block_scale_size_kv
-      );
-    }();
+    const auto kargs = FmhaKernel::MakeKargs(
+        param.q_ptr,
+        param.k_ptr,
+        param.v_ptr,
+        param.attn_bias_ptr,
+        nullptr, // q_descale_ptr
+        nullptr, // k_descale_ptr
+        nullptr, // v_descale_ptr
+        nullptr, // rand_val_ptr
+        nullptr, // lse_ptr
+        param.out_ptr,
+        param.M, // seqlen_q
+        param.N, // seqlen_k
+        param.K, // hdim_q
+        param.Kv, // hdim_v
+        param.Hq, // nhead_q
+        param.Hq / param.Hkv, // nhead_ratio_qk
+        param.scale,
+        0.0f, // logits_soft_cap
+        param.q_strides[1], // q, k, v, bias, randval, out tensor seq-dim
+                            // stride
+        param.k_strides[1],
+        param.v_strides[1],
+        param.attn_bias_strides[2],
+        0, // stride_randval
+        param.out_strides[1],
+        param.q_strides[2], // q, k, v, bias, randval, lse, out tensor
+                            // head-dim stride
+        param.k_strides[2],
+        param.v_strides[2],
+        param.attn_bias_strides[1],
+        0, // nhead_stride_randval
+        0, // nhead_stride_lse
+        param.out_strides[2],
+        0, // nhead_stride_q_descale
+        0, // nhead_stride_k_descale
+        0, // nhead_stride_v_descale
+        param.q_strides[0], // q, k, v, bias, randval, lse, out tensor
+                            // batch-dim stride
+        param.k_strides[0],
+        param.v_strides[0],
+        param.attn_bias_strides[0],
+        0, // batch_stride_randval
+        0, // batch_stride_lse
+        param.out_strides[0],
+        0, // batch_stride_q_descale
+        0, // batch_stride_k_descale
+        0, // batch_stride_v_descale
+        (param.window_size > 0) ? param.window_size - 1
+                                : -1, // window_left_size
+        (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+        0, // sink size
+        param.custom_mask_type,
+        param.dropout_prob, // dropout ratio
+        false, // is_store_randval
+        std::make_pair(param.philox_seed, param.philox_offset),
+        0, // block_scale_size_q
+        0); // block_scale_size_kv
 
     dim3 kGridSize =
         FmhaKernel::GridSize(param.B, param.Hq, param.M, param.Kv, false);
@@ -457,44 +454,42 @@ struct batched_infer_mask_bias_dropout_dispatch {
         remap_opt = 1;
       }
     }
-    const auto kargs = [&] {
-      return FmhaKernel::MakeKargs(
-          param.q_ptr,
-          param.k_ptr,
-          param.v_ptr,
-          nullptr, // lse_ptr
-          param.out_ptr,
-          param.M, // seqlen_q
-          param.N, // seqlen_k
-          param.K, // hdim_q
-          param.Kv, // hdim_v
-          param.Hq, // nhead_q
-          param.Hq / param.Hkv, // nhead_ratio_qk
-          param.scale,
-          0.0f, // logits_soft_cap
-          param.q_strides[1], // q, k, v, out tensor seq-dim
-                              // stride
-          param.k_strides[1],
-          param.v_strides[1],
-          param.out_strides[1],
-          param.q_strides[2], // q, k, v, lse, out tensor
-                              // head-dim stride
-          param.k_strides[2],
-          param.v_strides[2],
-          0, // nhead_stride_lse
-          param.out_strides[2],
-          param.q_strides[0], // q, k, v, lse, out tensor
-                              // batch-dim stride
-          param.k_strides[0],
-          param.v_strides[0],
-          0, // batch_stride_lse
-          param.out_strides[0],
-          (param.window_size > 0) ? param.window_size - 1
-                                  : -1, // window_left_size
-          (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
-          param.custom_mask_type,
-          remap_opt);
-    }();
+    const auto kargs = FmhaKernel::MakeKargs(
+        param.q_ptr,
+        param.k_ptr,
+        param.v_ptr,
+        nullptr, // lse_ptr
+        param.out_ptr,
+        param.M, // seqlen_q
+        param.N, // seqlen_k
+        param.K, // hdim_q
+        param.Kv, // hdim_v
+        param.Hq, // nhead_q
+        param.Hq / param.Hkv, // nhead_ratio_qk
+        param.scale,
+        0.0f, // logits_soft_cap
+        param.q_strides[1], // q, k, v, out tensor seq-dim
+                            // stride
+        param.k_strides[1],
+        param.v_strides[1],
+        param.out_strides[1],
+        param.q_strides[2], // q, k, v, lse, out tensor
+                            // head-dim stride
+        param.k_strides[2],
+        param.v_strides[2],
+        0, // nhead_stride_lse
+        param.out_strides[2],
+        param.q_strides[0], // q, k, v, lse, out tensor
+                            // batch-dim stride
+        param.k_strides[0],
+        param.v_strides[0],
+        0, // batch_stride_lse
+        param.out_strides[0],
+        (param.window_size > 0) ? param.window_size - 1
+                                : -1, // window_left_size
+        (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+        param.custom_mask_type,
+        remap_opt);
 
     dim3 kGridSize = FmhaKernel::GridSize(param.B, param.Hq, param.M, param.Kv);
     dim3 kBlockSize = FmhaKernel::BlockSize();
