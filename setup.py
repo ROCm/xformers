@@ -600,6 +600,8 @@ def get_extensions():
         use_rtn_bf16_convert = os.getenv("ENABLE_HIP_FMHA_RTN_BF16_CONVERT", "0")
         if use_rtn_bf16_convert == "1":
             cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=3"]
+        else:
+            cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=2"]
 
         arch = os.getenv("HIP_ARCHITECTURE", "native")
 
