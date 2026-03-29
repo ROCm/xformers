@@ -476,9 +476,6 @@ struct batched_infer_mask_bias_dropout_dispatch {
         param.k_strides[1],
         param.v_strides[1],
         param.out_strides[1],
-        0, // stride_q_descale
-        0, // stride_k_descale
-        0, // stride_v_descale
         param.q_strides[2], // q, k, v, lse, out tensor
                             // head-dim stride
         param.k_strides[2],
