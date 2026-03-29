@@ -375,6 +375,7 @@ struct grouped_infer_mask_bias_dropout_dispatch {
         param.seqlen_k_dev_ptr,
         nullptr, // block_scale_seqstart_q_ptr
         nullptr, // block_scale_seqstart_k_ptr
+        nullptr, // seqstart_v_scale_ptr
         param.K, // hdim_q
         param.Kv, // hdim_v
         param.Hq, // nhead_q
@@ -388,6 +389,9 @@ struct grouped_infer_mask_bias_dropout_dispatch {
         param.attn_bias_strides[2],
         0, // stride_randval
         param.out_strides[0],
+        0, // stride_q_descale
+        0, // stride_k_descale
+        0, // stride_v_descale
         param.q_strides[1], // q, k, v, bias, randval, lse, out tensor
                             // head-dim stride
         param.k_strides[1],

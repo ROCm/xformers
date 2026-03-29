@@ -243,6 +243,7 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           param.seqlen_k_dev_ptr,
           nullptr, // cu_seqlen_q_ptr, most recently added kernel argument
           nullptr, // cu_seqlen_k_ptr, most recently added kernel argument
+          0, // batch
           param.K,
           param.Kv,
           param.Hq,
@@ -312,7 +313,7 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           param.grad_q_f32_strides[0],
           param.q_strides[1],
           param.grad_q_f32_strides[1],
-          0);
+          0); // split_stride_dq_acc, not used
     }();
 
     dim3 kGridSize = FmhaBwdConvertQGradKernel::GridSize(

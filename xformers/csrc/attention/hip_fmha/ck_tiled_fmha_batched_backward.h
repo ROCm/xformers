@@ -241,6 +241,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
           NeedConvertGradQ ? param.grad_q_f32_ptr : param.grad_q_ptr,
           param.M, // seqlen_q
           param.N, // seqlen_k
+          0, // batch, newly added
           param.K,
           param.Kv,
           param.Hq,
@@ -320,7 +321,9 @@ struct batched_backward_mask_bias_dropout_dispatch {
           param.grad_q_f32_strides[2],
           param.q_strides[0],
           param.grad_q_f32_strides[0],
-          0);
+          0, // split_stride_dq_acc, not used
+          0, // batch_size, not used
+          0); // nhead, not used
     }();
 
     dim3 kGridSize =
