@@ -421,7 +421,7 @@ struct FmhaFwdCommonShape<128, 64> {
       typename detail::FmhaFwdCommonBlockTile<128, 64>::gemm0_warps,
       WarpTile_16x16x32,
       typename detail::FmhaFwdCommonBlockTile<128, 64>::gemm1_warps,
-      WarpTile_16x16x32,
+      WarpTile_16x16x16,
       IsVLayoutRowMajor>;
 };
 
