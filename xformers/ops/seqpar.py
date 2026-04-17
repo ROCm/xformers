@@ -7,7 +7,15 @@
 from typing import Callable, List, Tuple
 
 import torch
-from torch.distributed.distributed_c10d import _resolve_process_group
+
+# Some torch builds (e.g. Windows ROCm / TheRock) ship a stripped-down
+# torch.distributed without distributed_c10d. Importing this module must not
+# break xformers for single-GPU users; the fallback is only reachable if one
+# of the sequence-parallel ops below is actually called.
+try:
+    from torch.distributed.distributed_c10d import _resolve_process_group
+except ImportError:
+    _resolve_process_group = None  # type: ignore[assignment]
 
 from .differentiable_collectives import (
     gather_along_first_dim,
