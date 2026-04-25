@@ -461,6 +461,9 @@ struct batched_infer_mask_bias_dropout_dispatch {
         param.q_ptr,
         param.k_ptr,
         param.v_ptr,
+        nullptr, // q_descale_ptr
+        nullptr, // k_descale_ptr
+        nullptr, // v_descale_ptr
         nullptr, // lse_ptr
         param.out_ptr,
         param.M, // seqlen_q
