@@ -107,52 +107,62 @@ struct grouped_forward_mask_bias_dropout_dispatch {
 
   template <typename FmhaFwdKernel>
   static void RunWithKernel(GroupedForwardParams& param, hipStream_t stream) {
-    const auto kargs = [&] {
-      return FmhaFwdKernel::MakeKargs(
-          param.q_ptr,
-          param.k_ptr,
-          param.v_ptr,
-          param.attn_bias_ptr,
-          nullptr, // q_descale_ptr
-          nullptr, // k_descale_ptr
-          nullptr, // v_descale_ptr
-          nullptr, // rand_val_ptr
-          param.logsumexp_ptr,
-          param.out_ptr,
-          param.seqstart_q_dev_ptr,
-          param.seqstart_k_dev_ptr,
-          nullptr, // seqlen_q_ptr, most recently added kernel argument
-          param.seqlen_k_dev_ptr,
-          param.K, // hdim_q
-          param.Kv, // hdim_v
-          param.Hq, // nhead_q
-          param.Hq / param.Hkv, // nhead_ratio_qk
-          param.scale,
-          0.0f, // logits_soft_cap
-          param.q_strides[0], // q, k, v, bias, randval, out tensor seq-dim
-                              // stride
-          param.k_strides[0],
-          param.v_strides[0],
-          param.attn_bias_strides[2],
-          0, // stride_randval
-          param.out_strides[0],
-          param.q_strides[1], // q, k, v, bias, randval, lse, out tensor
-                              // head-dim stride
-          param.k_strides[1],
-          param.v_strides[1],
-          param.attn_bias_strides[1],
-          0, // nhead_stride_randval
-          param.lse_strides[0],
-          param.out_strides[1],
-          (param.window_size > 0) ? param.window_size - 1
-                                  : -1, // window_left_size
-          (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
-          param.custom_mask_type,
-          0, // min_seqlen_q, most recently added kernel argument
-          param.dropout_prob,
-          false, // is_store_randval
-          std::make_pair(param.philox_seed, param.philox_offset));
-    }();
+    const auto kargs = FmhaFwdKernel::MakeKargs(
+        param.q_ptr,
+        param.k_ptr,
+        param.v_ptr,
+        param.attn_bias_ptr,
+        nullptr, // q_descale_ptr
+        nullptr, // k_descale_ptr
+        nullptr, // v_descale_ptr
+        nullptr, // rand_val_ptr
+        param.logsumexp_ptr,
+        param.out_ptr,
+        param.seqstart_q_dev_ptr,
+        param.seqstart_k_dev_ptr,
+        nullptr, // seqlen_q_ptr, most recently added kernel argument
+        param.seqlen_k_dev_ptr,
+        nullptr, // block_scale_seqstart_q_ptr
+        nullptr, // block_scale_seqstart_k_ptr
+        nullptr, // seqstart_v_scale_ptr
+        param.K, // hdim_q
+        param.Kv, // hdim_v
+        param.Hq, // nhead_q
+        param.Hq / param.Hkv, // nhead_ratio_qk
+        param.scale,
+        0.0f, // logits_soft_cap
+        param.q_strides[0], // q, k, v, bias, randval, out tensor seq-dim
+                            // stride
+        param.k_strides[0],
+        param.v_strides[0],
+        param.attn_bias_strides[2],
+        0, // stride_randval
+        param.out_strides[0],
+        0, // stride_q_descale
+        0, // stride_k_descale
+        0, // stride_v_descale
+        param.q_strides[1], // q, k, v, bias, randval, lse, out tensor
+                            // head-dim stride
+        param.k_strides[1],
+        param.v_strides[1],
+        param.attn_bias_strides[1],
+        0, // nhead_stride_randval
+        param.lse_strides[0],
+        param.out_strides[1],
+        0, // nhead_stride_q_descale
+        0, // nhead_stride_k_descale
+        0, // nhead_stride_v_descale
+        (param.window_size > 0) ? param.window_size - 1
+                                : -1, // window_left_size
+        (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+        0, // sink size
+        param.custom_mask_type,
+        0, // min_seqlen_q, most recently added kernel argument
+        param.dropout_prob,
+        false, // is_store_randval
+        std::make_pair(param.philox_seed, param.philox_offset),
+        0, // block_scale_size_q
+        0); // block_scale_size_kv
 
     dim3 kGridSize = FmhaFwdKernel::GridSize(
         param.num_batches,

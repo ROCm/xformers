@@ -362,6 +362,7 @@ struct grouped_infer_splitkv_smallq_mask_bias_dropout_dispatch {
             (param.window_size > 0) ? param.window_size - 1
                                     : -1, // window_left_size
             (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+            0, // sink size
             param.custom_mask_type);
       else
         return FmhaFwdSplitKVKernel::MakeKargs(
@@ -409,6 +410,7 @@ struct grouped_infer_splitkv_smallq_mask_bias_dropout_dispatch {
             (param.window_size > 0) ? param.window_size - 1
                                     : -1, // window_left_size
             (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
+            0, // sink size
             param.custom_mask_type);
     }();
 

@@ -79,6 +79,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
                     typename FmhaBwdTypeConfig<ScalarType>::ODataType,
                     typename FmhaBwdTypeConfig<ScalarType>::OGradDataType,
                     typename FmhaBwdTypeConfig<ScalarType>::DDataType,
+                    typename FmhaBwdTypeConfig<ScalarType>::LSEDataType,
                     kBlockSize,
                     MaxK, // kVHeaddim
                     false, // kIsGroupMode
@@ -196,9 +197,13 @@ struct batched_backward_mask_bias_dropout_dispatch {
           param.out_ptr,
           param.grad_out_ptr,
           param.dot_out_ptr,
+          nullptr, // lse_ptr
+          nullptr, // sink_ptr
+          nullptr, // d_sink_ptr
           1.0f - param.dropout_prob,
           param.M,
           param.Kv,
+          param.Hq, // nhead_q
           param.grad_out_strides[1], // stride_do
           param.out_strides[1], // stride_o
           param.grad_out_strides[2], // nhead_stride_do
@@ -241,6 +246,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
           NeedConvertGradQ ? param.grad_q_f32_ptr : param.grad_q_ptr,
           param.M, // seqlen_q
           param.N, // seqlen_k
+          0, // batch, newly added
           param.K,
           param.Kv,
           param.Hq,
@@ -320,7 +326,9 @@ struct batched_backward_mask_bias_dropout_dispatch {
           param.grad_q_f32_strides[2],
           param.q_strides[0],
           param.grad_q_f32_strides[0],
-          0);
+          0, // split_stride_dq_acc, not used
+          0, // batch_size, not used
+          0); // nhead, not used
     }();
 
     dim3 kGridSize =
