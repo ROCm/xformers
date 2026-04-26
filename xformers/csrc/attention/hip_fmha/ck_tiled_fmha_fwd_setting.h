@@ -546,20 +546,6 @@ struct FmhaFwdSpecificShapeForV3 {
       true // IsVLayoutRowMajor
       >;
 };
-
-struct FmhaFwdSpecificShapeForQRAsyncTrload {
-  using block_tile = ck_tile::sequence<64, 128, 32, 128, 32, 128>;
-  using gemm_warps = ck_tile::sequence<4, 1, 1>;
-
-  using shape = ck_tile::TileFmhaShape<
-      block_tile,
-      gemm_warps,
-      WarpTile_16x16x32,
-      gemm_warps,
-      WarpTile_16x16x32,
-      true // IsVLayoutRowMajor
-      >;
-};
 #endif
 
 static int get_fmha_fwd_mtile(

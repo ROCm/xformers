@@ -41,8 +41,6 @@ struct batched_infer_mask_bias_dropout_dispatch {
   static constexpr int switch_seqlen_threshold = 2000;
 
   using FmhaV3Shape = typename FmhaFwdSpecificShapeForV3::shape;
-  using FmhaQRAsyncTrloadShape =
-      typename FmhaFwdSpecificShapeForQRAsyncTrload::shape;
 #endif
 
   template <typename FmhaTraits>
@@ -94,27 +92,6 @@ struct batched_infer_mask_bias_dropout_dispatch {
       FmhaMask,
       false, // kUseTrLoad,
       FmhaTraits>;
-
-  template <typename FmhaTraits, typename FmhaMask>
-  using FmhaPipelineProblemQRAsyncTrloadTemp =
-      ck_tile::BlockFmhaPipelineProblem<
-          typename FmhaFwdTypeConfig<ScalarType>::QDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::KDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::VDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::SaccDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::SMPLComputeDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::BiasDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::RandValOutputDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::LSEDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::PDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
-          typename FmhaFwdTypeConfig<ScalarType>::ODataType,
-          FmhaQRAsyncTrloadShape,
-          false, // kIsGroupMode
-          AttentionVariant<FmhaTraits>,
-          FmhaMask,
-          true, // kUseTrLoad
-          FmhaTraits>;
 #endif
 
   static void Run(BatchedForwardParams& param, hipStream_t stream) {
@@ -170,39 +147,6 @@ struct batched_infer_mask_bias_dropout_dispatch {
             using FmhaKernel =
                 ck_tile::FmhaFwdV3Kernel<FmhaPipeline, FmhaEpilogue>;
             RunWithKernelForV3<FmhaKernel>(param, stream);
-            return;
-          } else {
-            // do nothing, no needs to compile
-          }
-        } else {
-          // use qr_async_trload pipeline if seqlen <= switch_seqlen_threshold
-          if constexpr (MaxK == 128) {
-            using FmhaTraits = ck_tile::TileFmhaTraits<
-                false, // kPadSeqLenQ,
-                false, // kPadSeqLenK,
-                false, // kPadHeadDimQ,
-                false, // kPadHeadDimV,
-                false, // kHasLogitsSoftCap
-                kBiasEnum,
-                false, // kHasBiasGrad place-holder
-                false, // kStoreLSE
-                kHasDropout,
-                ck_tile::BlockAttentionQuantScaleEnum::NO_SCALE,
-                1 // Occupancy place-holder(-1 will make the build fail)
-                >;
-            using FmhaPipelineProblem =
-                FmhaPipelineProblemQRAsyncTrloadTemp<FmhaTraits, FmhaMask>;
-            using FmhaPipeline = ck_tile::BlockFmhaPipelineQRKSVSAsyncTrload<
-                FmhaPipelineProblem>;
-            using FmhaEpilogue =
-                ck_tile::Default2DEpilogue<ck_tile::Default2DEpilogueProblem<
-                    typename FmhaFwdTypeConfig<ScalarType>::OaccDataType,
-                    typename FmhaFwdTypeConfig<ScalarType>::ODataType,
-                    false,
-                    false>>;
-            using FmhaKernel =
-                ck_tile::FmhaFwdKernel<FmhaPipeline, FmhaEpilogue>;
-            RunWithKernel<FmhaKernel>(param, stream);
             return;
           } else {
             // do nothing, no needs to compile
