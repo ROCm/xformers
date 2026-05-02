@@ -144,32 +144,19 @@ def get_cuda_version(cuda_dir) -> int:
 
 
 def get_hip_version(rocm_dir) -> Optional[str]:
-    candidates: List[str] = []
-    if rocm_dir is not None:
-        # Standard Linux layout
-        candidates.append(os.path.join(rocm_dir, "bin", "hipcc"))
-        # Some Windows ROCm distributions (e.g. TheRock) place hipcc directly
-        # under the venv Scripts dir; rocm_dir may already point there.
-        candidates.append(os.path.join(rocm_dir, "hipcc"))
-    # Fall back to PATH lookup
-    candidates.append("hipcc")
-    last_error: Optional[Exception] = None
-    for hipcc_bin in candidates:
-        try:
-            raw_output = subprocess.check_output(
-                [hipcc_bin, "--version"], universal_newlines=True
-            )
-        except Exception as e:
-            last_error = e
-            continue
-        for line in raw_output.split("\n"):
-            if "HIP version" in line:
-                return line.split()[-1]
+    hipcc_bin = "hipcc" if rocm_dir is None else os.path.join(rocm_dir, "bin", "hipcc")
+    try:
+        raw_output = subprocess.check_output(
+            [hipcc_bin, "--version"], universal_newlines=True
+        )
+    except Exception as e:
+        print(
+            f"hip installation not found: {e} ROCM_PATH={os.environ.get('ROCM_PATH')}"
+        )
         return None
-    print(
-        f"hip installation not found: {last_error} "
-        f"ROCM_PATH={os.environ.get('ROCM_PATH')}"
-    )
+    for line in raw_output.split("\n"):
+        if "HIP version" in line:
+            return line.split()[-1]
     return None
 
 
@@ -407,76 +394,20 @@ def get_flash_attention3_extensions(cuda_version: int, extra_compile_args):
 
 
 def rename_cpp_cu(cpp_files):
-    # Only overwrite the .cu copy if the source has actually changed. shutil.copy
-    # always bumps mtime, which invalidates ninja's incremental cache and forces
-    # a full HIP rebuild every invocation.
     for entry in cpp_files:
-        dst = os.path.splitext(entry)[0] + ".cu"
-        if os.path.exists(dst):
-            try:
-                with open(entry, "rb") as f1, open(dst, "rb") as f2:
-                    if f1.read() == f2.read():
-                        continue
-            except OSError:
-                pass
-        shutil.copy(entry, dst)
-
-
-def get_rocm_root() -> Optional[str]:
-    """Locate the ROCm SDK root (the dir containing bin/, lib/llvm/, etc.).
-
-    Needed on Windows: hipcc forwards compile commands to clang but doesn't
-    pass `--rocm-path`, so clang fails to find the device library bitcode.
-    The TheRock SDK lives at venv/Lib/site-packages/_rocm_sdk_devel; we
-    discover it via the bundled `rocm-sdk` helper, then fall back to env
-    vars or hipcc's binary location.
-    """
-    # 1) Use the rocm-sdk helper if installed (TheRock).
-    try:
-        out = subprocess.check_output(
-            ["rocm-sdk", "path", "--root"], universal_newlines=True
-        ).strip()
-        if out and os.path.isdir(out):
-            return out
-    except Exception:
-        pass
-    # 2) Standard env vars.
-    for key in ("ROCM_HOME", "ROCM_PATH", "HIP_PATH"):
-        val = os.environ.get(key)
-        if val and os.path.isdir(val) and os.path.isdir(
-            os.path.join(val, "lib", "llvm", "amdgcn", "bitcode")
-        ):
-            return val
-    # 3) Walk up from hipcc's location.
-    hipcc = shutil.which("hipcc")
-    if hipcc:
-        # hipcc usually lives at <root>/bin/hipcc; walk up one level.
-        candidate = os.path.dirname(os.path.dirname(os.path.realpath(hipcc)))
-        if os.path.isdir(
-            os.path.join(candidate, "lib", "llvm", "amdgcn", "bitcode")
-        ):
-            return candidate
-    return None
+        shutil.copy(entry, os.path.splitext(entry)[0] + ".cu")
 
 
 def get_rocm_agent_arch():
-    # 1) Linux: rocm_agent_enumerator if present.
     exec_path = "/opt/rocm/bin/rocm_agent_enumerator"
     if os.path.isfile(exec_path) and os.access(exec_path, os.X_OK):
         arches = subprocess.check_output([exec_path], universal_newlines=True)
-        arch_list = [a for a in arches.strip().split() if a and a != "gfx000"]
-        if arch_list:
-            return arch_list[0]
-    # 2) Cross-platform: ask torch (works on Windows ROCm via TheRock).
-    try:
-        if torch.cuda.is_available() and torch.version.hip:
-            arch_name = torch.cuda.get_device_properties(0).gcnArchName
-            # gcnArchName looks like "gfx1200" or "gfx942:sramecc+:xnack-"; strip features.
-            return arch_name.split(":")[0]
-    except Exception as e:
-        print(f"torch-based GPU arch detection failed: {e}")
-    # 3) Last-resort fallback (preserves prior behaviour).
-    return "gfx942"
+        arch_list = arches.strip().split()
+        return arch_list[0]
+    elif torch.cuda.is_available() and torch.version.hip:
+        return torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+    else:
+        return "gfx942"
 
 
 def get_extensions():
@@ -650,21 +581,13 @@ def get_extensions():
         and (torch.cuda.is_available() or os.getenv("HIP_ARCHITECTURE", "") != "")
     ):
         rename_cpp_cu(source_hip)
-        hip_version = get_hip_version(ROCM_HOME)
-        rocm_root = get_rocm_root()
+        hip_version = get_hip_version(
+            None if platform.system() == "Windows" else ROCM_HOME
+        )
 
         source_hip_cu = []
         for ff in source_hip:
             source_hip_cu += [ff.replace(".cpp", ".cu")]
-
-        # Mirror the CUDA-side XFORMERS_SELECTIVE_BUILD filter above so ROCm
-        # users also get a substring knob for dev-time iteration. Like the
-        # CUDA version, this is sharp-edged: the pattern must be wide enough
-        # to keep every instance referenced by the dispatcher TUs that remain
-        # in the build, or the link will fail.
-        if "XFORMERS_SELECTIVE_BUILD" in os.environ:
-            pattern = os.environ["XFORMERS_SELECTIVE_BUILD"]
-            source_hip_cu = [f for f in source_hip_cu if pattern in str(f)]
 
         extension = CUDAExtension
         sources += source_hip_cu
@@ -689,68 +612,40 @@ def get_extensions():
         if arch == "native":
             arch = get_rocm_agent_arch()
 
-        # CDNA archs use MFMA. RDNA archs (gfx11xx / gfx12xx) use WMMA — the
-        # xformers wrapper layer also needs FMHA_BUILD_ON_GFX11/GFX12 defines
-        # so the per-arch warp_tile / pipeline selection picks WMMA-friendly
-        # shapes. CK tile itself supports both.
-        cdna_archs = ["gfx908", "gfx90a", "gfx942", "gfx950"]
-        rdna3_archs = [
-            "gfx1100", "gfx1101", "gfx1102", "gfx1103",
-            "gfx1150", "gfx1151", "gfx1152", "gfx1153",
-        ]
-        rdna4_archs = ["gfx1200", "gfx1201"]
-
-        if arch not in cdna_archs + rdna3_archs + rdna4_archs:
+        if (
+            arch not in ["gfx908", "gfx90a", "gfx942", "gfx950"]
+            and not arch.startswith(("gfx11", "gfx12"))
+        ):
             raise ValueError(f"Not supported AMD GPU arch: {arch}")
 
         if arch == "gfx950":
             cc_flag += ["-DFMHA_BUILD_ON_GFX950"]
-        elif arch in rdna3_archs:
+        elif arch.startswith("gfx11"):
             cc_flag += ["-DFMHA_BUILD_ON_GFX11"]
-        elif arch in rdna4_archs:
+        elif arch.startswith("gfx12"):
             cc_flag += ["-DFMHA_BUILD_ON_GFX12"]
 
         offload_compress_flag = []
         if hip_version >= "6.2.":
             offload_compress_flag = ["--offload-compress"]
 
-        # MSVC's UCRT marks std::getenv as _CRT_INSECURE_DEPRECATE, which fires
-        # -Wdeprecated-declarations inside ck_tile/core/utility/env.hpp. That
-        # header is transitively included by virtually every HIP TU, so under
-        # -Werror the Windows build fails to link. Only silence this class of
-        # warning on Windows — Linux/CDNA keeps -Werror enforcement unchanged.
-        windows_warning_flags = (
-            ["-Wno-deprecated-declarations"]
-            if platform.system() == "Windows"
-            else []
-        )
-
-        rocm_path_flag: List[str] = []
-        if rocm_root is not None:
-            rocm_path_flag.append(f"--rocm-path={rocm_root}")
-            # TheRock layout puts the device-library bitcode at
-            # <root>/lib/llvm/amdgcn/bitcode rather than the upstream
-            # <root>/amdgcn/bitcode that clang's --rocm-path discovery
-            # expects. Pass the explicit override so clang can resolve
-            # oclc_isa_version_*.bc et al.
-            device_lib = os.path.join(
-                rocm_root, "lib", "llvm", "amdgcn", "bitcode"
-            )
-            if os.path.isdir(device_lib):
-                rocm_path_flag.append(f"--rocm-device-lib-path={device_lib}")
+        if platform.system() == "Windows":
+            cc_flag += [
+                "-Wno-deprecated-declarations",
+                "-Wno-unused-command-line-argument",
+                "-Wno-unknown-attributes",
+            ]
 
         extra_compile_args["nvcc"] = [
             "-O3",
             "-std=c++20",
             f"--offload-arch={arch}",
-            *rocm_path_flag,
             *offload_compress_flag,
             "-U__CUDA_NO_HALF_OPERATORS__",
             "-U__CUDA_NO_HALF_CONVERSIONS__",
             "-DCK_TILE_FMHA_FWD_FAST_EXP2=1",
             "-fgpu-flush-denormals-to-zero",
             "-Werror",
-            *windows_warning_flags,
             "-Wno-c++11-narrowing",
             "-Woverloaded-virtual",
             "-Wno-unknown-warning-option",
@@ -820,7 +715,31 @@ class BuildExtensionWithExtraFiles(BuildExtension):
         self.pkg_name = "xformers"
         super().__init__(*args, **kwargs)
 
+    def _use_windows_link_response_files(self) -> None:
+        if platform.system() != "Windows":
+            return
+
+        original_spawn = self.compiler.spawn
+
+        def spawn_with_response_file(cmd):
+            tool = os.path.basename(str(cmd[0])).lower() if cmd else ""
+            command_length = sum(len(str(arg)) + 1 for arg in cmd)
+            if tool not in {"link.exe", "lld-link.exe"} or command_length < 30_000:
+                return original_spawn(cmd)
+
+            rsp_path = Path(self.build_temp, f"xformers_link_{id(cmd)}.rsp").resolve()
+            rsp_path.parent.mkdir(parents=True, exist_ok=True)
+            rsp_path.write_text(
+                "\n".join(subprocess.list2cmdline([str(arg)]) for arg in cmd[1:])
+                + "\n"
+            )
+
+            return original_spawn([cmd[0], f"@{rsp_path}"])
+
+        self.compiler.spawn = spawn_with_response_file
+
     def build_extensions(self) -> None:
+        self._use_windows_link_response_files()
         super().build_extensions()
 
         # Fix incorrect output names caused by py_limited_api=True on Windows. see item #1272

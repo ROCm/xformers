@@ -3,17 +3,12 @@
 # This source code is licensed under the BSD license found in the
 # LICENSE file in the root directory of this source tree.
 
+from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.distributed
-
-if TYPE_CHECKING:
-    # torch.distributed.Work is not exposed on every build (notably Windows
-    # ROCm / TheRock), so we only import it for type checkers. The runtime
-    # annotation is a forward-ref string that is never evaluated.
-    from torch.distributed import Work
 
 
 def all_reduce(
@@ -30,7 +25,7 @@ def all_reduce(
 
 def gather_along_first_dim_async(
     input_: torch.Tensor, *, process_group: torch.distributed.ProcessGroup
-) -> Tuple[torch.Tensor, Optional["Work"]]:
+) -> Tuple[torch.Tensor, Optional[torch.distributed.Work]]:
     mp_size = process_group.size()
     if mp_size == 1:
         return input_, None
@@ -48,7 +43,7 @@ def gather_along_first_dim_async(
 
 def reduce_scatter_along_first_dim_async(
     input_: torch.Tensor, *, process_group: torch.distributed.ProcessGroup
-) -> Tuple[torch.Tensor, Optional["Work"]]:
+) -> Tuple[torch.Tensor, Optional[torch.distributed.Work]]:
     mp_size = process_group.size()
     if mp_size == 1:
         return input_, None
