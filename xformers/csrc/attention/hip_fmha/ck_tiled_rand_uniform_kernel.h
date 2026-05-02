@@ -171,8 +171,12 @@ struct FmhaRandUniformKernel {
     return ck_tile::make_tuple(i_block, i_nhead, i_batch);
   }
 
-  __host__ static constexpr auto BlockSize() {
-    return dim3(kBlockSize);
+  __host__ static dim3 BlockSize() {
+    if (ck_tile::is_wave32()) {
+      return dim3(kBlockSize / 2);
+    } else {
+      return dim3(kBlockSize);
+    }
   }
 
   __device__ static constexpr ck_tile::index_t GetSmemSize() {
