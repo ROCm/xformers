@@ -601,16 +601,20 @@ def get_extensions():
         ]
 
         cc_flag = ["-DBUILD_PYTHON_PACKAGE"]
-        use_rtn_bf16_convert = os.getenv("ENABLE_HIP_FMHA_RTN_BF16_CONVERT", "0")
-        if use_rtn_bf16_convert == "1":
-            cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=3"]
-        else:
-            cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=2"]
-
         arch = os.getenv("HIP_ARCHITECTURE", "native")
 
         if arch == "native":
             arch = get_rocm_agent_arch()
+
+        use_rtn_bf16_convert = os.getenv("ENABLE_HIP_FMHA_RTN_BF16_CONVERT")
+        if use_rtn_bf16_convert is None:
+            # RDNA CK bf16 forward output can be reused by FlashAttention backward;
+            # truncating fp32 accumulators is not accurate enough for that pairing.
+            use_rtn_bf16_convert = "1" if arch.startswith(("gfx11", "gfx12")) else "0"
+        if use_rtn_bf16_convert == "1":
+            cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=3"]
+        else:
+            cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=2"]
 
         if (
             arch not in ["gfx908", "gfx90a", "gfx942", "gfx950"]
