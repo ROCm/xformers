@@ -70,7 +70,13 @@ struct FmhaFwdCommonBlockTile<128, 128> {
 
 template <ck_tile::index_t MTile>
 struct FmhaFwdCommonBlockTile<256, MTile> {
+#if defined(FMHA_BUILD_ON_GFX11)
+  // gfx11 WMMA duplicates Q data across subgroups, so a 128x256 Q tile
+  // can exceed static_for's 256-iteration limit. Keep hdim-256 at M=64.
+  using tile_lengths = ck_tile::sequence<64, 128, 32, 256, 32, 256>;
+#else
   using tile_lengths = ck_tile::sequence<128, 128, 32, 256, 32, 256>;
+#endif
   using gemm0_warps = ck_tile::sequence<4, 1, 1>;
   using gemm1_warps = ck_tile::sequence<4, 1, 1>;
 };
