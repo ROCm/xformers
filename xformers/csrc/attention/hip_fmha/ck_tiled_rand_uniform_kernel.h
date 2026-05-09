@@ -173,7 +173,7 @@ struct FmhaRandUniformKernel {
 
   __host__ static dim3 BlockSize() {
     if (ck_tile::is_wave32()) {
-      return dim3(kBlockSize / 2);
+      return dim3(kBlockSize / ck_tile::get_warp_size() * 32);
     } else {
       return dim3(kBlockSize);
     }
