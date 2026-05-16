@@ -8,10 +8,12 @@
 
 #include <ck_tile/core/numeric/integer.hpp>
 #include <ck_tile/host/kernel_launch.hpp>
+#include <ck_tile/host/pinned_host_releaser.hpp>
 #include <ck_tile/host/stream_config.hpp>
 #include <ck_tile/ops/epilogue.hpp>
 #include <ck_tile/ops/fmha.hpp>
 
+#include "ck_fmha_util.h"
 #include "ck_tiled_bool_switch.h"
 #include "ck_tiled_fmha_bwd_setting.h"
 #include "ck_tiled_fmha_params.h"
@@ -53,10 +55,6 @@ struct grouped_backward_mask_bias_dropout_dispatch {
       FmhaBlockDropout,
       false, // kUseTrLoad, not used
       FmhaTraits>;
-
-  static constexpr bool NeedConvertGradQ = !std::is_same<
-      typename FmhaBwdTypeConfig<ScalarType>::AccDataType,
-      typename FmhaBwdTypeConfig<ScalarType>::QGradDataType>::value;
 
   static void Run(GroupedBackwardParams& param, hipStream_t stream) {
     {
@@ -146,7 +144,7 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           });
     };
 
-    if constexpr (NeedConvertGradQ) {
+    {
       constexpr ck_tile::index_t kBlockSize = 128;
 
       const bool pad_seqlen_q = true;
@@ -168,7 +166,6 @@ struct grouped_backward_mask_bias_dropout_dispatch {
                     typename FmhaBwdTypeConfig<ScalarType>::QGradDataType,
                     kBlockSize,
                     64, // kM0
-                    1, // kN0, no use
                     MaxK, // kQKHeaddim
                     true, // kIsGroupMode
                     false, // kIsDeterministic
@@ -228,6 +225,134 @@ struct grouped_backward_mask_bias_dropout_dispatch {
   static void RunWithBwdDQDKDVKernel(
       GroupedBackwardParams& param,
       hipStream_t stream) {
+    if (param.seqstart_q_host_ptr != nullptr) {
+      auto host_ws_size =
+          FmhaBwdDQDKDVKernel::GetWorkspaceHostSize(param.num_batches);
+
+      void* host_buf;
+
+      HIP_CALL_CHECK(hipHostMalloc(&host_buf, host_ws_size));
+      auto device_ws_size = FmhaBwdDQDKDVKernel::PrepareWorkspaceHost(
+          host_buf,
+          param.num_batches,
+          param.K,
+          param.Hq,
+          param.M,
+          param.N,
+          param.seqstart_q_host_ptr,
+          param.seqstart_k_host_ptr);
+      param.workspace_size = host_ws_size + device_ws_size;
+
+      char* gpu_buf;
+
+      HIP_CALL_CHECK(hipMallocAsync(&gpu_buf, param.workspace_size, stream));
+      HIP_CALL_CHECK(hipMemcpyAsync(
+          gpu_buf, host_buf, host_ws_size, hipMemcpyHostToDevice, stream));
+
+      // to release the host buffer in async
+      HIP_CALL_CHECK(hipLaunchHostFunc(
+          stream,
+          [](void* ud) {
+            ck_tile::pinned_host_releaser::instance().enqueue(ud);
+          },
+          host_buf));
+
+      if (FmhaBwdDQDKDVKernel::NeedsZeroDqAcc()) {
+        HIP_CALL_CHECK(
+            hipMemsetAsync(gpu_buf + host_ws_size, 0, device_ws_size, stream));
+      };
+
+      param.workspace_ptr = reinterpret_cast<uint8_t*>(gpu_buf);
+    } else {
+      auto host_ws_size =
+          FmhaBwdDQDKDVKernel::GetWorkspaceHostSize(param.num_batches);
+
+      const size_t seqstart_bytes = sizeof(int) * (param.num_batches + 1);
+      const size_t pin_total = 2 * seqstart_bytes + host_ws_size;
+      char* pin_buf;
+
+      HIP_CALL_CHECK(hipHostMalloc(&pin_buf, pin_total));
+
+      int* pin_q = reinterpret_cast<int*>(pin_buf);
+      int* pin_k = reinterpret_cast<int*>(pin_buf + seqstart_bytes);
+      void* pin_w = pin_buf + 2 * seqstart_bytes;
+
+      // to prepare the seqstart_q_host[] and seqstart_k_host[] in async
+      HIP_CALL_CHECK(hipMemcpyAsync(
+          pin_q,
+          param.seqstart_q_dev_ptr,
+          seqstart_bytes,
+          hipMemcpyDeviceToHost,
+          stream));
+      HIP_CALL_CHECK(hipMemcpyAsync(
+          pin_k,
+          param.seqstart_k_dev_ptr,
+          seqstart_bytes,
+          hipMemcpyDeviceToHost,
+          stream));
+
+      struct PrepareCtx {
+        void* pin_w;
+        int* pin_q;
+        int* pin_k;
+        int batch;
+        int hdim_q;
+        int nhead_q;
+      };
+      auto* ctx = new PrepareCtx{
+          pin_w, pin_q, pin_k, param.num_batches, param.K, param.Hq};
+
+      // to construct the content in host workspace in async
+      HIP_CALL_CHECK(hipLaunchHostFunc(
+          stream,
+          [](void* ud) {
+            auto* c = static_cast<PrepareCtx*>(ud);
+            FmhaBwdDQDKDVKernel::PrepareWorkspaceHost(
+                c->pin_w,
+                c->batch,
+                c->hdim_q,
+                c->nhead_q,
+                0, // seqlen_q, unused in group mode
+                0, // seqlen_k unused in group mode
+                c->pin_q,
+                c->pin_k);
+            delete c;
+          },
+          ctx));
+
+      const size_t device_ws_size =
+          FmhaBwdDQDKDVKernel::GetWorkspaceDeviceSizeUpperBound(
+              param.num_batches,
+              param.K,
+              param.Hq,
+              param.M,
+              param.max_seqlen_k);
+      param.workspace_size = host_ws_size + device_ws_size;
+
+      char* gpu_buf;
+
+      HIP_CALL_CHECK(hipMallocAsync(&gpu_buf, param.workspace_size, stream));
+
+      // to transfer the content of host workspace to gpu in async
+      HIP_CALL_CHECK(hipMemcpyAsync(
+          gpu_buf, pin_w, host_ws_size, hipMemcpyHostToDevice, stream));
+
+      // to release the host buffer (include the seqstart_q/k_host[] and host
+      // workspace) in async
+      HIP_CALL_CHECK(hipLaunchHostFunc(
+          stream,
+          [](void* ud) {
+            ck_tile::pinned_host_releaser::instance().enqueue(ud);
+          },
+          pin_buf));
+
+      if (FmhaBwdDQDKDVKernel::NeedsZeroDqAcc())
+        HIP_CALL_CHECK(
+            hipMemsetAsync(gpu_buf + host_ws_size, 0, device_ws_size, stream));
+
+      param.workspace_ptr = reinterpret_cast<uint8_t*>(gpu_buf);
+    };
+
     const auto kargs = [&] {
       return FmhaBwdDQDKDVKernel::MakeKargsImpl(
           param.q_ptr,
@@ -238,10 +363,11 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           param.grad_out_ptr,
           param.dot_out_ptr,
           nullptr, // randval_ptr
+          nullptr, // dq_ptr, only used for QrQtrDor pipeline
           param.grad_k_ptr,
           param.grad_v_ptr,
           param.grad_bias_ptr,
-          NeedConvertGradQ ? param.grad_q_f32_ptr : param.grad_q_ptr,
+          param.workspace_ptr,
           param.seqstart_q_dev_ptr,
           param.seqstart_k_dev_ptr,
           nullptr, // seqlen_q_ptr, most recently added kernel argument
@@ -261,7 +387,7 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           param.attn_bias_strides[1],
           0, // stride_randval
           param.grad_out_strides[0],
-          NeedConvertGradQ ? param.grad_q_f32_strides[0] : param.q_strides[0],
+          0, // stride_dq, // only used for QrQtrDor pipeline
           param.grad_k_strides[0],
           param.grad_v_strides[0],
           param.attn_bias_strides[1], // assume grad_bias has same strides as
@@ -274,12 +400,11 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           0, // nhead_stride_randval
           param.grad_out_strides[1],
           param.lsed_strides[0], // assume lse/dot is in HM contiguous layout
-          NeedConvertGradQ ? param.grad_q_f32_strides[1] : param.q_strides[1],
+          0, // nhead_stride_dq, // only used for QrQtrDor pipeline
           param.grad_k_strides[1],
           param.grad_v_strides[1],
           param.attn_bias_strides[0], // assume grad_bias has same strides as
                                       // bias
-          0, // split_stride_dq_acc
           (param.window_size > 0) ? param.window_size - 1
                                   : -1, // window_left_size
           (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
@@ -305,8 +430,10 @@ struct grouped_backward_mask_bias_dropout_dispatch {
       hipStream_t stream) {
     const auto kargs = [&] {
       return FmhaBwdConvertQGradKernel::MakeKargs(
-          param.grad_q_f32_ptr,
+          param.workspace_ptr,
           param.grad_q_ptr,
+          param.num_batches,
+          param.Hq,
           param.seqstart_q_dev_ptr,
           param.seqstart_k_dev_ptr,
           nullptr, // seqlen_q_ptr, most recently added kernel argument
@@ -315,10 +442,7 @@ struct grouped_backward_mask_bias_dropout_dispatch {
           nullptr, // cu_seqlen_k_ptr, most recently added kernel argument
           param.K, // headdim of q/k
           param.q_strides[0],
-          param.grad_q_f32_strides[0],
-          param.q_strides[1],
-          param.grad_q_f32_strides[1],
-          0); // split_stride_dq_acc, not used
+          param.q_strides[1]);
     }();
 
     dim3 kGridSize = FmhaBwdConvertQGradKernel::GridSize(
@@ -331,6 +455,10 @@ struct grouped_backward_mask_bias_dropout_dispatch {
         ck_tile::stream_config{stream, false},
         ck_tile::make_kernel<kBlockPerCu>(
             FmhaBwdConvertQGradKernel{}, kGridSize, kBlockSize, 0, kargs));
+
+    if (param.workspace_size > 0) {
+      HIP_CALL_CHECK(hipFreeAsync(param.workspace_ptr, stream));
+    };
   }
 };
 
