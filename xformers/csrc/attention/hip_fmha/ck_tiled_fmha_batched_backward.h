@@ -12,6 +12,7 @@
 #include <ck_tile/ops/epilogue.hpp>
 #include <ck_tile/ops/fmha.hpp>
 
+#include "ck_fmha_util.h"
 #include "ck_tiled_bool_switch.h"
 #include "ck_tiled_fmha_bwd_setting.h"
 #include "ck_tiled_fmha_params.h"
@@ -53,10 +54,6 @@ struct batched_backward_mask_bias_dropout_dispatch {
       FmhaBlockDropout,
       false, // kUseTrLoad
       FmhaTraits>;
-
-  static constexpr bool NeedConvertGradQ = !std::is_same<
-      typename FmhaBwdTypeConfig<ScalarType>::AccDataType,
-      typename FmhaBwdTypeConfig<ScalarType>::QGradDataType>::value;
 
   static void Run(BatchedBackwardParams& param, hipStream_t stream) {
     {
@@ -147,7 +144,8 @@ struct batched_backward_mask_bias_dropout_dispatch {
             RunWithBwdDQDKDVKernel<FmhaBwdDQDKDVKernel_>(param, stream);
           });
     };
-    if constexpr (NeedConvertGradQ) {
+
+    {
       constexpr ck_tile::index_t kBlockSize = 256;
 
       const bool pad_seqlen_q = !(param.M % kBlockSize == 0);
@@ -169,7 +167,6 @@ struct batched_backward_mask_bias_dropout_dispatch {
                     typename FmhaBwdTypeConfig<ScalarType>::QGradDataType,
                     kBlockSize,
                     FmhaShape::kM0,
-                    FmhaShape::kN0,
                     MaxK, // kQKHeaddim
                     false, // kIsGroupMode
                     false, // kIsDeterministic
@@ -230,6 +227,27 @@ struct batched_backward_mask_bias_dropout_dispatch {
   static void RunWithBwdDQDKDVKernel(
       BatchedBackwardParams& param,
       hipStream_t stream) {
+    auto host_ws_size = FmhaBwdDQDKDVKernel::GetWorkspaceHostSize(param.B);
+
+    // ToDo: how to release host_buf inside with/no hipGraph capturing
+    auto host_buf = new char[host_ws_size];
+    auto device_ws_size = FmhaBwdDQDKDVKernel::PrepareWorkspaceHost(
+        host_buf, param.B, param.K, param.Hq, param.M, param.N);
+    param.workspace_size = host_ws_size + device_ws_size;
+
+    char* gpu_buf;
+
+    HIP_CALL_CHECK(hipMallocAsync(&gpu_buf, param.workspace_size, stream));
+    HIP_CALL_CHECK(hipMemcpyAsync(
+        gpu_buf, host_buf, host_ws_size, hipMemcpyHostToDevice, stream));
+
+    if (FmhaBwdDQDKDVKernel::NeedsZeroDqAcc()) {
+      HIP_CALL_CHECK(
+          hipMemsetAsync(gpu_buf + host_ws_size, 0, device_ws_size, stream));
+    };
+
+    param.workspace_ptr = reinterpret_cast<uint8_t*>(gpu_buf);
+
     const auto kargs = [&] {
       return FmhaBwdDQDKDVKernel::MakeKargsImpl(
           param.q_ptr,
@@ -240,10 +258,11 @@ struct batched_backward_mask_bias_dropout_dispatch {
           param.grad_out_ptr,
           param.dot_out_ptr,
           nullptr, // rand_val_ptr
+          nullptr, // dq_ptr, only used with QrQtrDor pipeline
           param.grad_k_ptr,
           param.grad_v_ptr,
           param.grad_bias_ptr,
-          NeedConvertGradQ ? param.grad_q_f32_ptr : param.grad_q_ptr,
+          param.workspace_ptr,
           param.M, // seqlen_q
           param.N, // seqlen_k
           0, // batch, newly added
@@ -259,7 +278,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
           param.attn_bias_strides[2],
           0, // stride_randval
           param.grad_out_strides[1],
-          NeedConvertGradQ ? param.grad_q_f32_strides[1] : param.q_strides[1],
+          0, // stride_dq, only used with QrQtrDor pipeline
           param.grad_k_strides[1],
           param.grad_v_strides[1],
           param.attn_bias_strides[2], // assume grad_bias has same strides as
@@ -272,7 +291,7 @@ struct batched_backward_mask_bias_dropout_dispatch {
           0, // nhead_stride_randval
           param.grad_out_strides[2],
           param.lsed_strides[1],
-          NeedConvertGradQ ? param.grad_q_f32_strides[2] : param.q_strides[2],
+          0, // nhead_stride_dq, only used with QrQtrDor pipeline
           param.grad_k_strides[2],
           param.grad_v_strides[2],
           param.attn_bias_strides[1], // assume grad_bias has same strides as
@@ -285,12 +304,11 @@ struct batched_backward_mask_bias_dropout_dispatch {
           0, // batch_stride_randval
           param.grad_out_strides[0],
           param.lsed_strides[0], // lse/dot is in BHM contiguous layout
-          NeedConvertGradQ ? param.grad_q_f32_strides[0] : param.q_strides[0],
+          0, // batch_stride_dq, // only used for QrQtrDor pipeline
           param.grad_k_strides[0],
           param.grad_v_strides[0],
           param.attn_bias_strides[0], // assume grad_bias has same strides as
                                       // bias
-          0, // split_stride_dq_acc
           (param.window_size > 0) ? param.window_size - 1
                                   : -1, // window_left_size
           (param.custom_mask_type == 0) ? -1 : 0, // window_right_size
@@ -315,20 +333,16 @@ struct batched_backward_mask_bias_dropout_dispatch {
       hipStream_t stream) {
     const auto kargs = [&] {
       return FmhaBwdConvertQGradKernel::MakeKargs(
-          param.grad_q_f32_ptr,
+          param.workspace_ptr,
           param.grad_q_ptr,
+          param.B,
+          param.Hq,
           param.M, // seqlen_q
           param.N, // seqlen_k
           param.K, // headdim of q/k
           param.q_strides[1],
-          param.grad_q_f32_strides[1],
           param.q_strides[2],
-          param.grad_q_f32_strides[2],
-          param.q_strides[0],
-          param.grad_q_f32_strides[0],
-          0, // split_stride_dq_acc, not used
-          0, // batch_size, not used
-          0); // nhead, not used
+          param.q_strides[0]);
     }();
 
     dim3 kGridSize =
@@ -341,6 +355,10 @@ struct batched_backward_mask_bias_dropout_dispatch {
         ck_tile::stream_config{stream, false},
         ck_tile::make_kernel<kBlockPerCu>(
             FmhaBwdConvertQGradKernel{}, kGridSize, kBlockSize, 0, kargs));
+
+    if (param.workspace_size > 0) {
+      HIP_CALL_CHECK(hipFreeAsync(param.workspace_ptr, stream));
+    };
   }
 };
 

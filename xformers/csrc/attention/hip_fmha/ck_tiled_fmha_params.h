@@ -197,6 +197,12 @@ struct BatchedBackwardParams {
   // BHM mode lengths, completely contiguous
   const void* logsumexp_ptr;
   void* dot_out_ptr;
+
+  // workspace ptr need not be set by the API users, it is set by intermediate
+  // layer codes before launching the fmha bwd kernel and freed aftre launching
+  // the convertDq kernel
+  int workspace_size;
+  uint8_t* workspace_ptr;
 };
 
 struct GroupedBackwardParams {
@@ -215,6 +221,9 @@ struct GroupedBackwardParams {
   void* seqstart_k_dev_ptr;
   void* seqlen_k_dev_ptr;
 
+  int* seqstart_q_host_ptr;
+  int* seqstart_k_host_ptr;
+
   float scale;
   bool has_attn_bias;
   bool bias_has_grad;
@@ -232,9 +241,6 @@ struct GroupedBackwardParams {
 
   std::array<int, 3> grad_k_strides;
   std::array<int, 3> grad_v_strides;
-
-  // assume grad_q has same strides as q, but grad_q_f32 can be different
-  std::array<int, 3> grad_q_f32_strides;
 
   // HM mode strides, completely contiguous, unpadded layout where M is
   // concatten total seqlen_q for all batches
@@ -255,8 +261,6 @@ struct GroupedBackwardParams {
   void* grad_v_ptr;
   void* grad_bias_ptr;
 
-  void* grad_q_f32_ptr;
-
   float dropout_prob;
   int64_t philox_seed;
   int64_t philox_offset;
@@ -264,4 +268,10 @@ struct GroupedBackwardParams {
   // BHM mode lengths, completely contiguous
   const void* logsumexp_ptr;
   void* dot_out_ptr;
+
+  // workspace ptr need not be set by the API users, it is set by intermediate
+  // layer codes before launching the fmha bwd kernel and freed aftre launching
+  // the convertDq kernel
+  int workspace_size;
+  uint8_t* workspace_ptr;
 };
