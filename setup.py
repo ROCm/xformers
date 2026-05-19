@@ -637,6 +637,9 @@ def get_extensions():
             cc_flag += [
                 "-Wno-deprecated-declarations",
                 "-Wno-unused-command-line-argument",
+                # CK headers use C++20 attributes such as [[no_unique_address]].
+                # Windows HIP host compilation warns on that spelling under
+                # -Werror, even though the device-side gfx12 build is valid.
                 "-Wno-unknown-attributes",
             ]
 
