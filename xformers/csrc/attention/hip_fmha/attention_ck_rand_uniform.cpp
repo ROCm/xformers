@@ -13,62 +13,12 @@
 #include <torch/types.h>
 #include <ATen/cuda/PhiloxUtils.cuh>
 
-#include <cstdint>
-
 #include <ck_tile/core.hpp>
+#include <ck_tile/host/kernel_launch.hpp>
+
+#include "ck_tiled_rand_uniform_kernel.h"
 
 namespace {
-
-__global__ void rand_uniform_int_kernel(
-    uint8_t* randvals,
-    int M,
-    int N,
-    int num_heads,
-    int64_t stride_m,
-    int64_t stride_n,
-    int64_t stride_head,
-    int64_t stride_batch,
-    uint64_t philox_seed,
-    uint64_t philox_offset) {
-  constexpr int kPhiloxPerTile = 64;
-  constexpr int kWarpGemmMN = 32;
-
-  const int row = blockIdx.x;
-  const int col = blockIdx.y;
-  const int batch_head = blockIdx.z;
-  const int i_batch = batch_head / num_heads;
-  const int i_head = batch_head - i_batch * num_heads;
-  const int lane = threadIdx.x;
-
-  if (lane >= kPhiloxPerTile) {
-    return;
-  }
-
-  const auto subsequence =
-      ck_tile::bit_cast<unsigned long long>(make_uint2(row, col));
-  ck_tile::philox ph(
-      philox_seed,
-      philox_offset + (i_batch * num_heads + i_head) * kPhiloxPerTile + lane);
-
-  uint8_t random_uint8_t[16];
-  ph.get_random_16x8(random_uint8_t, subsequence);
-
-  uint8_t* out = randvals +
-      static_cast<int64_t>(i_batch) * stride_batch +
-      static_cast<int64_t>(i_head) * stride_head;
-
-  for (int r = 0; r < 16; ++r) {
-    const int i = (16 * (r / 8) % kWarpGemmMN) + 8 * (lane / 32) + (r % 8);
-    const int j = lane % kWarpGemmMN;
-    const int m = row * kWarpGemmMN + i;
-    const int n = col * kWarpGemmMN + j;
-
-    if (m < M && n < N) {
-      out[static_cast<int64_t>(m) * stride_m +
-          static_cast<int64_t>(n) * stride_n] = random_uint8_t[r];
-    }
-  }
-}
 
 /**
  * generate a tensor with random uniform values. only used for testing, not much
@@ -78,8 +28,6 @@ at::Tensor rand_uniform_int(
     double dropout_prob,
     const at::Tensor& out_pattern) // [Batches, num_head, query_len, key_len]
 {
-  (void)dropout_prob;
-
   int B = out_pattern.size(0);
   int num_heads = out_pattern.size(1);
   int M = out_pattern.size(2);
@@ -108,43 +56,34 @@ at::Tensor rand_uniform_int(
   randvals = at::empty(
       {B, num_heads, M, N}, out_pattern.options().dtype(at::ScalarType::Byte));
 
-  if (B > 0 && num_heads > 0 && M > 0 && N > 0) {
-    constexpr int kWarpGemmMN = 32;
-    const dim3 grid(
-        (M + kWarpGemmMN - 1) / kWarpGemmMN,
-        (N + kWarpGemmMN - 1) / kWarpGemmMN,
-        B * num_heads);
-    const dim3 block(64);
+  {
+    // only work for batched mode
+    using FmhaRandUniformKernel_ = FmhaRandUniformKernel<uint8_t, false>;
 
-    hipLaunchKernelGGL(
-        rand_uniform_int_kernel,
-        grid,
-        block,
-        0,
-        stream,
-        static_cast<uint8_t*>(randvals.data_ptr()),
+    const auto kargs = FmhaRandUniformKernel_::MakeKargs(
+        randvals.data_ptr(),
         M,
         N,
         num_heads,
-        randvals.stride(2),
-        randvals.stride(3),
-        randvals.stride(1),
-        randvals.stride(0),
-        static_cast<uint64_t>(philox_seed),
-        static_cast<uint64_t>(philox_offset));
+        B,
+        static_cast<int>(randvals.stride(2)),
+        static_cast<int>(randvals.stride(3)),
+        static_cast<int>(randvals.stride(1)),
+        static_cast<int>(randvals.stride(0)),
+        {philox_seed, philox_offset});
 
-    const auto launch_status = hipGetLastError();
-    TORCH_CHECK(
-        launch_status == hipSuccess,
-        "HIP rand_uniform_int_kernel launch failed: ",
-        hipGetErrorString(launch_status));
+    dim3 kGridSize = FmhaRandUniformKernel_::GridSize(B, num_heads, M, N);
+    dim3 kBlockSize = FmhaRandUniformKernel_::BlockSize();
+    constexpr ck_tile::index_t kBlockPerCu =
+        FmhaRandUniformKernel_::kBlockPerCu;
+
+    (void)ck_tile::launch_kernel(
+        ck_tile::stream_config{stream, false},
+        ck_tile::make_kernel<kBlockPerCu>(
+            FmhaRandUniformKernel_{}, kGridSize, kBlockSize, 0, kargs));
   }
 
-  const auto sync_status = hipStreamSynchronize(stream);
-  TORCH_CHECK(
-      sync_status == hipSuccess,
-      "HIP rand_uniform_int_kernel failed: ",
-      hipGetErrorString(sync_status));
+  (void)hipStreamSynchronize(stream);
 
   return randvals;
 } // namespace
