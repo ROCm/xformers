@@ -68,7 +68,8 @@ efficient_attention_forward_ck(
     const c10::optional<at::Tensor>& seqlen_k,
     const c10::optional<int64_t> window_size,
     const c10::optional<at::Tensor>& block_tables,
-    const c10::optional<int64_t> page_size) {
+    const c10::optional<int64_t> page_size,
+    const c10::optional<int64_t> num_kv_splits_override) {
   TORCH_CHECK(query.dim() == 4);
   TORCH_CHECK(key.dim() == 4);
   TORCH_CHECK(value.dim() == 4);
@@ -242,8 +243,16 @@ efficient_attention_forward_ck(
     bool use_split_kv;
     int num_kv_splits;
 
-    std::tie(use_split_kv, num_kv_splits) =
-        get_num_kv_splits_heuristic(p.B, p.Hq, p.M, std::max(p.K, p.Kv), 8);
+    if (num_kv_splits_override.has_value()) {
+      TORCH_CHECK(
+          *num_kv_splits_override >= 1 && *num_kv_splits_override <= 16,
+          "num_kv_splits must be in [1, 16]");
+      use_split_kv = true;
+      num_kv_splits = static_cast<int>(*num_kv_splits_override);
+    } else {
+      std::tie(use_split_kv, num_kv_splits) =
+          get_num_kv_splits_heuristic(p.B, p.Hq, p.M, std::max(p.K, p.Kv), 8);
+    }
 
     // 1) fmha fwd split-kv kernel does not support dropout
     p.use_split_kv = (!use_dropout && use_split_kv) ? true : false;
@@ -391,8 +400,16 @@ efficient_attention_forward_ck(
     int num_kv_splits;
 
     // added for support split_kv
-    std::tie(use_split_kv, num_kv_splits) = get_num_kv_splits_heuristic(
-        p.num_batches, p.Hq, p.max_seqlen_q, std::max(p.K, p.Kv), 8);
+    if (num_kv_splits_override.has_value()) {
+      TORCH_CHECK(
+          *num_kv_splits_override >= 1 && *num_kv_splits_override <= 16,
+          "num_kv_splits must be in [1, 16]");
+      use_split_kv = true;
+      num_kv_splits = static_cast<int>(*num_kv_splits_override);
+    } else {
+      std::tie(use_split_kv, num_kv_splits) = get_num_kv_splits_heuristic(
+          p.num_batches, p.Hq, p.max_seqlen_q, std::max(p.K, p.Kv), 8);
+    }
 
     // 1) fmha fwd split-kv kernel does not support dropout
     // 2) Paged-KVcache is only available from the split-kv kernel at present
@@ -492,7 +509,9 @@ efficient_attention_forward_ck_meta(
     const c10::optional<at::Tensor>& seqlen_k,
     const c10::optional<int64_t> window_size,
     const c10::optional<at::Tensor>& block_tables,
-    const c10::optional<int64_t> page_size) {
+    const c10::optional<int64_t> page_size,
+    const c10::optional<int64_t> num_kv_splits_override) {
+  (void)num_kv_splits_override;
   at::SymInt B = query.sym_size(0);
   at::SymInt M = query.sym_size(1);
   at::SymInt N = key.sym_size(1);
