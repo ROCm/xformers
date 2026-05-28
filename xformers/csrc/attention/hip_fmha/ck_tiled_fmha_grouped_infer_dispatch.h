@@ -25,8 +25,12 @@ template <
     ck_tile::index_t MaxK,
     ck_tile::index_t MTile>
 struct grouped_infer_mask_bias_dropout_dispatch {
+#if defined(FMHA_BUILD_ON_GFX12)
+  static constexpr bool kUseWholeKPrefetchPipeline = false;
+#else
   static constexpr bool kUseWholeKPrefetchPipeline =
       (MaxK <= 128 && !kHasDropout);
+#endif
 
 #if defined(FMHA_BUILD_ON_GFX950)
   static constexpr bool kTrLoadAvailable = true;
