@@ -7,10 +7,10 @@ from typing import Any, Iterable, List, Optional, Tuple
 
 import torch
 
-from xformers.ops.common import get_operator, register_operator
+from xformers.ops.common import register_operator
+from xformers.ops.fmha import ck as ck_fmha
 from xformers.ops.fmha.attn_bias import BlockDiagonalCausalWithOffsetPaddedKeysMask
 from xformers.ops.fmha.common import (
-    AttentionFwOpBase,
     check_lastdim_alignment_stride1,
     Context,
     Inputs,
@@ -18,15 +18,14 @@ from xformers.ops.fmha.common import (
 
 
 @register_operator
-class FwOp(AttentionFwOpBase):
+class FwOp(ck_fmha.FwOp):
 
-    OPERATOR = get_operator("xformers", "efficient_attention_forward_decoder_splitk_ck")
+    OPERATOR = ck_fmha.FwOp.OPERATOR
     SUPPORTED_DEVICES = {"cuda"}
     SUPPORTED_DTYPES = {
         torch.half,
         torch.bfloat16,
-        torch.float,
-    }  # Those are dtypes of Q. In the quantized case K/V has dtype int32
+    }
     SUPPORTED_MAX_K = 256
     SUPPORTED_ATTN_BIAS_TYPES: Iterable[Any] = (
         type(None),
@@ -54,19 +53,10 @@ class FwOp(AttentionFwOpBase):
 
     @classmethod
     def not_supported_reasons(cls, d: Inputs) -> List[str]:
-        reasons = super(FwOp, cls).not_supported_reasons(d)
+        reasons = super().not_supported_reasons(d)
         check_lastdim_alignment_stride1(reasons, "query", d.query, 8)
-        if d.key.dtype != torch.int32:
-            check_lastdim_alignment_stride1(reasons, "key", d.key, 8)
-            check_lastdim_alignment_stride1(reasons, "value", d.value, 8)
-        if cls.OPERATOR is None:
-            reasons.append("triton is not available")
-        if d.device.type == "cuda":
-            # Has only been tested on 8.0 / 9.0.
-            if torch.cuda.get_device_capability(d.device) < (7, 0):
-                reasons.append(
-                    "requires GPU with sm80 minimum compute capacity, e.g., A100/H100/L4"
-                )
+        check_lastdim_alignment_stride1(reasons, "key", d.key, 8)
+        check_lastdim_alignment_stride1(reasons, "value", d.value, 8)
 
         q_len = d.query.shape[1]
         if isinstance(d.attn_bias, BlockDiagonalCausalWithOffsetPaddedKeysMask):
@@ -85,10 +75,6 @@ class FwOp(AttentionFwOpBase):
             if d.key.stride(-2) == 0 and d.value.stride(-2) == 0 and q_len > 1:
                 reasons.append("multiquery is only supported with query seqlen=1")
 
-        if d.attn_bias is not None and q_len > 1:
-            reasons.append(
-                "query with seqlen > 1 is not supported in the presence of causal mask"
-            )
         return reasons
 
     @classmethod
@@ -107,65 +93,9 @@ class FwOp(AttentionFwOpBase):
     def apply(
         cls, inp: Inputs, needs_gradient: bool
     ) -> Tuple[torch.Tensor, Optional[Context]]:
-        attn_bias = inp.attn_bias
-        q, k, v = inp.get_qkv_in_bmghk()
-
-        if attn_bias is not None:
-            assert isinstance(attn_bias, BlockDiagonalCausalWithOffsetPaddedKeysMask)
-            attn_bias.k_seqinfo.to(k.device)
-            attn_bias.q_seqinfo.to(q.device)
-            padding = attn_bias.k_seqinfo.padding
-            seq_positions_gpu = attn_bias.k_seqinfo.seqlen
-        else:
-            padding = k.shape[1]
-            seq_positions_gpu = None
-
-        if attn_bias is not None:
-            # key: (1, B * padding, G, 1 if multiquery else Hkv, D)
-            # value: like key
-            # query: (1, B * q_seqlen, G, Hq, D)
-            multiquery = k.stride(3) == 0
-            if multiquery:
-                key = k[0, :, :, :1].unflatten(0, (-1, padding))
-                value = v[0, :, :, :1].unflatten(0, (-1, padding))
-            else:
-                key = k[0].unflatten(0, (-1, padding))
-                value = v[0].unflatten(0, (-1, padding))
-            query = q[0].unflatten(0, (key.shape[0], -1))
-        else:
-            # key: (B, padding, G, 1 if multiquery else Hkv, D)
-            # value: like key
-            # query: (B, q_seqlen, G, Hq, D)
-            key = k
-            query = q
-            value = v
-
-        B, _, _, H, _ = query.shape
-        _, Mk, _, _, _ = key.shape
-
-        if cls.SPLIT_K is not None:
-            split_k = cls.SPLIT_K
-        else:
-            # Use heuristics
-            split_k = cls.get_split_k(B, H, Mk)
-
-        if inp.scale is not None:
-            qk_scale = inp.scale
-        else:
-            qk_scale = torch.rsqrt(
-                torch.tensor(k.shape[-1], dtype=torch.float32)
-            ).item()
-
-        out = cls.OPERATOR(
-            query=query,
-            key=key,
-            value=value,
-            seq_positions=seq_positions_gpu,
-            scale=qk_scale,
-            split_k=split_k,
+        return ck_fmha.FwOp.apply_with_num_kv_splits(
+            inp, needs_gradient=needs_gradient, num_kv_splits=cls.SPLIT_K
         )
-
-        return out, None
 
 
 class FwOp_S1(FwOp):

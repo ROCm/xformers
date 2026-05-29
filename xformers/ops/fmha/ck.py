@@ -222,12 +222,25 @@ class FwOp(AttentionFwOpBase):
     def apply(
         cls, inp: Inputs, needs_gradient: bool
     ) -> Tuple[torch.Tensor, Optional[Context]]:
+        return cls.apply_with_num_kv_splits(
+            inp, needs_gradient=needs_gradient, num_kv_splits=None
+        )
+
+    @classmethod
+    def apply_with_num_kv_splits(
+        cls,
+        inp: Inputs,
+        needs_gradient: bool,
+        num_kv_splits: Optional[int],
+    ) -> Tuple[torch.Tensor, Optional[Context]]:
         if type(inp.attn_bias) not in FwOp.SUPPORTED_ATTN_BIAS_TYPES:
             raise NotImplementedError("Unsupported attn_bias type")
         if inp.query.ndim in [1, 2, 3]:
             raise NotImplementedError("Unsupported number of dimensions")
         if inp.query.ndim in [4]:
-            return cls.apply_bmhk(inp, needs_gradient=needs_gradient)
+            return cls.apply_bmhk(
+                inp, needs_gradient=needs_gradient, num_kv_splits=num_kv_splits
+            )
         assert inp.query.ndim == 5, f"query has shape {inp.query.shape}"
         ctx: Optional[Context] = None
 
@@ -269,7 +282,9 @@ class FwOp(AttentionFwOpBase):
             value=value,
             attn_bias=attn_bias_replace,
         )
-        out, ctx = cls.apply_bmhk(inp, needs_gradient=needs_gradient)
+        out, ctx = cls.apply_bmhk(
+            inp, needs_gradient=needs_gradient, num_kv_splits=num_kv_splits
+        )
         out = out.unflatten(2, (G, Hq))
         if ctx is not None:
             lse = ctx.lse.unflatten(1, (G, Hq))
@@ -278,7 +293,10 @@ class FwOp(AttentionFwOpBase):
 
     @classmethod
     def apply_bmhk(
-        cls, inp: Inputs, needs_gradient: bool
+        cls,
+        inp: Inputs,
+        needs_gradient: bool,
+        num_kv_splits: Optional[int] = None,
     ) -> Tuple[torch.Tensor, Optional[Context]]:
         if type(inp.attn_bias) not in FwOp.SUPPORTED_ATTN_BIAS_TYPES:
             raise NotImplementedError("Unsupported attn_bias type")
@@ -331,6 +349,7 @@ class FwOp(AttentionFwOpBase):
                 )
                 else None
             ),
+            num_kv_splits=num_kv_splits,
         )
 
         ctx: Optional[Context] = None

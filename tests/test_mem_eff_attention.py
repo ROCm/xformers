@@ -1682,14 +1682,14 @@ def _test_decoder(
         k = k[..., :1, :].expand(k_shape)
         v = v[..., :1, :].expand(k_shape)
 
-    if skip_reasons := op.not_supported_reasons(fmha.Inputs(q, k, v)):
-        pytest.skip("; ".join(skip_reasons))
-
     attn_bias = fmha.attn_bias.BlockDiagonalCausalWithOffsetPaddedKeysMask.from_seqlens(
         q_seqlen=[num_queries] * bsz,
         kv_seqlen=k_seqlen,
         kv_padding=padding,
     )
+
+    if skip_reasons := op.not_supported_reasons(fmha.Inputs(q, k, v, attn_bias)):
+        pytest.skip("; ".join(skip_reasons))
 
     decoder_output = fmha.memory_efficient_attention_forward(
         q,
@@ -1763,7 +1763,10 @@ def test_triton_splitk_decoder(
 @pytest.mark.parametrize(
     "op", [fmha.ck_splitk.FwOp_S1, fmha.ck_splitk.FwOp_S2, fmha.ck_splitk.FwOp_S4]
 )
-@pytest.mark.parametrize("dtype", ["f32"])
+# ck_splitk delegates to the CK tiled split-K pipeline; that path uses
+# dot-product instructions and supports fp16/bf16 inputs, not the old fp32
+# custom hip_decoder kernel.
+@pytest.mark.parametrize("dtype", ["f16", "bf16"])
 @pytest.mark.parametrize("kv_heads", [None, 1, 2], ids=_kv_heads_label)
 @pytest.mark.parametrize("n_heads", [16])
 @pytest.mark.parametrize("d", [128, 256])

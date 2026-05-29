@@ -25,8 +25,12 @@ template <
     ck_tile::index_t MaxK,
     ck_tile::index_t MTile>
 struct batched_infer_mask_bias_dropout_dispatch {
+#if defined(FMHA_BUILD_ON_GFX12)
+  static constexpr bool kUseWholeKPrefetchPipeline = false;
+#else
   static constexpr bool kUseWholeKPrefetchPipeline =
       (MaxK <= 128 && !kHasDropout);
+#endif
 
 #if defined(FMHA_BUILD_ON_GFX950)
   static constexpr bool kTrLoadAvailable = true;
@@ -158,12 +162,19 @@ struct batched_infer_mask_bias_dropout_dispatch {
     };
 #endif
 
+#if defined(FMHA_BUILD_ON_GFX11) || defined(FMHA_BUILD_ON_GFX12)
+    // Current RDNA3/4 CK FMHA builds use the sync pipeline; the async
+    // global-to-LDS path fails for these targets, so keep it uninstantiated
+    // instead of relying on a core CK fallback.
+    constexpr bool enable_async_pipeline = false;
+#else
     const bool enable_async_pipeline = []() {
       const char* env_p = std::getenv("FMHA_ENABLE_ASYNC_PIPELINE");
       if (env_p == nullptr)
         return false;
       return static_cast<bool>(atoi(env_p));
     }();
+#endif
 
     const bool use_async_pipeline =
         (!kHasBias && (param.K % 8 == 0) && (param.Kv % 8 == 0) &&
@@ -267,7 +278,9 @@ struct batched_infer_mask_bias_dropout_dispatch {
               RunWithKernel<FmhaKernel>(param, stream);
             }
           });
-    } else {
+    }
+#if !defined(FMHA_BUILD_ON_GFX11) && !defined(FMHA_BUILD_ON_GFX12)
+    else {
       using FmhaShape = typename FmhaFwdCommonShape<MaxK, MTile>::Type;
 
       const bool pad_seqlen_k = !(param.N % FmhaShape::kN0 == 0);
@@ -307,7 +320,9 @@ struct batched_infer_mask_bias_dropout_dispatch {
           /* runtime will never get here, so no codes to compile */
         };
       });
-    };
+    }
+#endif
+    ;
   };
 
   template <typename FmhaKernel>

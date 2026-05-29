@@ -404,6 +404,8 @@ def get_rocm_agent_arch():
         arches = subprocess.check_output([exec_path], universal_newlines=True)
         arch_list = arches.strip().split()
         return arch_list[0]
+    elif torch.cuda.is_available() and torch.version.hip:
+        return torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
     else:
         return "gfx942"
 
@@ -579,7 +581,9 @@ def get_extensions():
         and (torch.cuda.is_available() or os.getenv("HIP_ARCHITECTURE", "") != "")
     ):
         rename_cpp_cu(source_hip)
-        hip_version = get_hip_version(ROCM_HOME)
+        hip_version = get_hip_version(
+            None if platform.system() == "Windows" else ROCM_HOME
+        )
 
         source_hip_cu = []
         for ff in source_hip:
@@ -597,26 +601,47 @@ def get_extensions():
         ]
 
         cc_flag = ["-DBUILD_PYTHON_PACKAGE"]
-        use_rtn_bf16_convert = os.getenv("ENABLE_HIP_FMHA_RTN_BF16_CONVERT", "0")
-        if use_rtn_bf16_convert == "1":
-            cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=3"]
-        else:
-            cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=2"]
-
         arch = os.getenv("HIP_ARCHITECTURE", "native")
 
         if arch == "native":
             arch = get_rocm_agent_arch()
 
-        if arch not in ["gfx908", "gfx90a", "gfx942", "gfx950"]:
+        use_rtn_bf16_convert = os.getenv("ENABLE_HIP_FMHA_RTN_BF16_CONVERT")
+        if use_rtn_bf16_convert is None:
+            # RDNA CK bf16 forward output can be reused by FlashAttention backward;
+            # truncating fp32 accumulators is not accurate enough for that pairing.
+            use_rtn_bf16_convert = "1" if arch.startswith(("gfx11", "gfx12")) else "0"
+        if use_rtn_bf16_convert == "1":
+            cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=3"]
+        else:
+            cc_flag += ["-DCK_TILE_FLOAT_TO_BFLOAT16_DEFAULT=2"]
+
+        if (
+            arch not in ["gfx908", "gfx90a", "gfx942", "gfx950"]
+            and not arch.startswith(("gfx11", "gfx12"))
+        ):
             raise ValueError(f"Not supported AMD GPU arch: {arch}")
 
         if arch == "gfx950":
             cc_flag += ["-DFMHA_BUILD_ON_GFX950"]
+        elif arch.startswith("gfx11"):
+            cc_flag += ["-DFMHA_BUILD_ON_GFX11"]
+        elif arch.startswith("gfx12"):
+            cc_flag += ["-DFMHA_BUILD_ON_GFX12"]
 
         offload_compress_flag = []
         if hip_version >= "6.2.":
             offload_compress_flag = ["--offload-compress"]
+
+        if platform.system() == "Windows":
+            cc_flag += [
+                "-Wno-deprecated-declarations",
+                "-Wno-unused-command-line-argument",
+                # CK headers use C++20 attributes such as [[no_unique_address]].
+                # Windows HIP host compilation warns on that spelling under
+                # -Werror, even though the device-side gfx12 build is valid.
+                "-Wno-unknown-attributes",
+            ]
 
         extra_compile_args["nvcc"] = [
             "-O3",
@@ -697,7 +722,31 @@ class BuildExtensionWithExtraFiles(BuildExtension):
         self.pkg_name = "xformers"
         super().__init__(*args, **kwargs)
 
+    def _use_windows_link_response_files(self) -> None:
+        if platform.system() != "Windows":
+            return
+
+        original_spawn = self.compiler.spawn
+
+        def spawn_with_response_file(cmd):
+            tool = os.path.basename(str(cmd[0])).lower() if cmd else ""
+            command_length = sum(len(str(arg)) + 1 for arg in cmd)
+            if tool not in {"link.exe", "lld-link.exe"} or command_length < 30_000:
+                return original_spawn(cmd)
+
+            rsp_path = Path(self.build_temp, f"xformers_link_{id(cmd)}.rsp").resolve()
+            rsp_path.parent.mkdir(parents=True, exist_ok=True)
+            rsp_path.write_text(
+                "\n".join(subprocess.list2cmdline([str(arg)]) for arg in cmd[1:])
+                + "\n"
+            )
+
+            return original_spawn([cmd[0], f"@{rsp_path}"])
+
+        self.compiler.spawn = spawn_with_response_file
+
     def build_extensions(self) -> None:
+        self._use_windows_link_response_files()
         super().build_extensions()
 
         # Fix incorrect output names caused by py_limited_api=True on Windows. see item #1272

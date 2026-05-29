@@ -9,7 +9,15 @@ from typing import Callable, Dict, List, Optional, overload, Sequence, Union
 import torch
 import torch.distributed as dist
 import torch.multiprocessing.reductions
-from torch.distributed._symmetric_memory import get_symm_mem_workspace
+
+# torch.distributed._symmetric_memory is absent from some torch builds
+# (e.g. Windows ROCm / TheRock). Guard the import so xformers stays usable
+# on single-GPU; the None fallback is only reached if the fused ops below
+# are actually invoked.
+try:
+    from torch.distributed._symmetric_memory import get_symm_mem_workspace
+except ImportError:
+    get_symm_mem_workspace = None  # type: ignore[assignment]
 
 OP_FINISHED_CHANNEL = 0
 COMMS_READY_CHANNEL = 1
