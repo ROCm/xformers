@@ -471,7 +471,7 @@ def get_extensions():
 
     define_macros = []
 
-    extra_compile_args = {"cxx": ["-O3", "-std=c++17", "-DPy_LIMITED_API=0x03090000"]}
+    extra_compile_args = {"cxx": ["-O3", "-std=c++20", "-DPy_LIMITED_API=0x03090000"]}
     if sys.platform == "win32":
         if os.getenv("DISTUTILS_USE_SDK") == "1":
             extra_compile_args = {
