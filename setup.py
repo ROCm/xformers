@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -158,6 +159,74 @@ def get_hip_version(rocm_dir) -> Optional[str]:
         if "HIP version" in line:
             return line.split()[-1]
     return None
+
+
+# Linux host cxx only. Default C++17 (PyTorch 2.13); C++20 or newer if ATen requires it.
+_HOST_CXX_CANDIDATES = ("c++17", "c++20", "c++23", "c++26")
+
+
+def get_host_cxx_std_flag() -> str:
+    """Match Linux host cxx to the libtorch we compile against.
+
+    Override with XFORMERS_CXX_STD=17|20|23|26.
+    """
+    override = os.environ.get("XFORMERS_CXX_STD", "").strip().lower()
+    if override:
+        digits = "".join(c for c in override if c.isdigit()) or "17"
+        return f"-std=c++{digits}"
+
+    from_torch = _cxx_std_from_torch_config()
+    if from_torch:
+        return from_torch
+
+    for std in _HOST_CXX_CANDIDATES:
+        if _aten_compiles_with(std):
+            return f"-std={std}"
+    return "-std=c++17"
+
+
+def _cxx_std_from_torch_config() -> Optional[str]:
+    try:
+        cfg = torch.__config__.show()
+    except Exception:
+        return None
+    for line in cfg.splitlines():
+        if "CXX_FLAGS" not in line and "CMAKE_CXX_FLAGS" not in line:
+            continue
+        matches = re.findall(r"-std=(?:gnu\+\+|c\+\+)(\d+)", line)
+        if matches:
+            return f"-std=c++{matches[-1]}"
+    return None
+
+
+def _aten_compiles_with(std: str) -> bool:
+    compiler = os.environ.get("CXX") or "c++"
+    try:
+        from torch.utils.cpp_extension import include_paths
+
+        try:
+            incs = include_paths()
+        except TypeError:
+            incs = include_paths(cuda=False)
+    except Exception:
+        return False
+
+    src = "#include <ATen/ATen.h>\nint main() { return 0; }\n"
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            cpp = Path(td) / "aten_std_check.cpp"
+            cpp.write_text(src)
+            cmd = [compiler, "-fsyntax-only", str(cpp), f"-std={std}"]
+            for p in incs:
+                cmd.extend(["-I", str(p)])
+            return (
+                subprocess.run(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                ).returncode
+                == 0
+            )
+    except Exception:
+        return False
 
 
 ######################################
@@ -471,7 +540,12 @@ def get_extensions():
 
     define_macros = []
 
-    extra_compile_args = {"cxx": ["-O3", "-std=c++20", "-DPy_LIMITED_API=0x03090000"]}
+    host_cxx_std = (
+        get_host_cxx_std_flag() if sys.platform != "win32" else "-std=c++17"
+    )
+    extra_compile_args = {"cxx": ["-O3", host_cxx_std, "-DPy_LIMITED_API=0x03090000"]}
+    if sys.platform != "win32":
+        print(f"xformers host cxx: {host_cxx_std}")
     if sys.platform == "win32":
         if os.getenv("DISTUTILS_USE_SDK") == "1":
             extra_compile_args = {
@@ -695,6 +769,7 @@ def get_extensions():
                 "XFORMERS_ENABLE_DEBUG_ASSERTIONS",
                 "NVCC_FLAGS",
                 "XFORMERS_PACKAGE_FROM",
+                "XFORMERS_CXX_STD",
             ]
         },
     }
