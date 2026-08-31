@@ -160,6 +160,21 @@ def get_hip_version(rocm_dir) -> Optional[str]:
     return None
 
 
+def get_host_cxx_std_flag() -> str:
+    """Linux host cxx: follow libtorch. Default C++17; C++20+ if torch was built that way."""
+    override = os.environ.get("XFORMERS_CXX_STD", "").strip().lower()
+    if override:
+        digits = "".join(c for c in override if c.isdigit()) or "17"
+        return f"-std=c++{digits}"
+    try:
+        matches = re.findall(r"-std=(?:gnu\+\+|c\+\+)(\d+)", torch.__config__.show())
+        if matches:
+            return f"-std=c++{matches[-1]}"
+    except Exception:
+        pass
+    return "-std=c++17"
+
+
 ######################################
 # FLASH-ATTENTION v2
 ######################################
@@ -471,7 +486,7 @@ def get_extensions():
 
     define_macros = []
 
-    extra_compile_args = {"cxx": ["-O3", "-std=c++17", "-DPy_LIMITED_API=0x03090000"]}
+    extra_compile_args = {"cxx": ["-O3", get_host_cxx_std_flag(), "-DPy_LIMITED_API=0x03090000"]}
     if sys.platform == "win32":
         if os.getenv("DISTUTILS_USE_SDK") == "1":
             extra_compile_args = {
