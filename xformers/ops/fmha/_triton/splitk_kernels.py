@@ -697,10 +697,10 @@ if sys.version_info >= (3, 9):
 
 @triton.jit
 def load_dequantize_k_v_group(
-    K_block_ptr,
-    V_block_ptr,
-    K_scale_shift_block_ptr,
-    V_scale_shift_block_ptr,
+    K_ptrs,
+    V_ptrs,
+    K_scale_shift_ptrs,
+    V_scale_shift_ptrs,
     BOUNDS_CHECKS_N: tl.constexpr,
     PACKED_PER_VAL: tl.constexpr,
     PACKED_D_PER_GROUP: tl.constexpr,
@@ -708,23 +708,35 @@ def load_dequantize_k_v_group(
     dtype: tl.constexpr,
     group_id: tl.constexpr,
     IS_HIP: tl.constexpr,
+    kv_mask_n,
+    stride_kk,
+    stride_vk,
+    stride_k_scale_shift_row,
+    stride_v_scale_shift_col,
 ):
     """Load K/V for a given block. In case of int4/fp8-quantized K/V, dequantize them after loading.
     If quantization is group-wise, use group_id to advance the pointers to the current group.
     """
-    # Advance to the current quantization group
-    K_block_ptr = tl.advance(K_block_ptr, (PACKED_D_PER_GROUP * group_id, 0))
-    V_block_ptr = tl.advance(V_block_ptr, (0, PACKED_D_PER_GROUP * group_id))
+    # Advance to the current quantization group via pointer arithmetic
+    # K is (D, N) with D-stride = stride_kk
+    # V is (N, D) with D-stride = stride_vk
+    K_ptrs_g = K_ptrs + PACKED_D_PER_GROUP * group_id * stride_kk
+    V_ptrs_g = V_ptrs + PACKED_D_PER_GROUP * group_id * stride_vk
 
     # -- load k, v --
-    k = tl.load(K_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ())
-    v = tl.load(V_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ())
+    if BOUNDS_CHECKS_N:
+        k = tl.load(K_ptrs_g, mask=kv_mask_n[None, :], other=0.0)
+        v = tl.load(V_ptrs_g, mask=kv_mask_n[:, None], other=0.0)
+    else:
+        k = tl.load(K_ptrs_g)
+        v = tl.load(V_ptrs_g)
 
     # If K/V are quantized, load quantization coefficients and dequantize.
     if FP8_QUANTIZED:
-        v_scale_shift = tl.load(
-            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
-        )
+        if BOUNDS_CHECKS_N:
+            v_scale_shift = tl.load(V_scale_shift_ptrs, mask=kv_mask_n[:, None], other=0.0)
+        else:
+            v_scale_shift = tl.load(V_scale_shift_ptrs)
         if IS_HIP:
             # MI300 doesn't have builtin casting instructions for fp8 -> bf16,
             # so casting to f32 is actually more performant on this workload.
@@ -733,9 +745,10 @@ def load_dequantize_k_v_group(
             v_scale, v_shift = cast_uint32_to_half2(v_scale_shift)
         v = dequantize(v, v_scale, v_shift, PACKED_PER_VAL, IS_HIP).to(dtype)
 
-        k_scale_shift = tl.load(
-            K_scale_shift_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ()
-        )
+        if BOUNDS_CHECKS_N:
+            k_scale_shift = tl.load(K_scale_shift_ptrs, mask=kv_mask_n[None, :], other=0.0)
+        else:
+            k_scale_shift = tl.load(K_scale_shift_ptrs)
         if IS_HIP:
             k_scale, k_shift = cast_uint32_to_float(k_scale_shift)
             k = dequantize_k_hip(k, k_scale, k_shift, PACKED_PER_VAL).to(dtype)
@@ -751,15 +764,14 @@ def load_dequantize_k_v_group(
             k = tl.trans(k_t)
     elif PACKED_PER_VAL > 1:
         # Int4 quantization.
-        K_scale_shift_block_ptr = tl.advance(K_scale_shift_block_ptr, (group_id, 0))
-        V_scale_shift_block_ptr = tl.advance(V_scale_shift_block_ptr, (0, group_id))
-
-        k_scale_shift = tl.load(
-            K_scale_shift_block_ptr, boundary_check=(1,) if BOUNDS_CHECKS_N else ()
-        )
-        v_scale_shift = tl.load(
-            V_scale_shift_block_ptr, boundary_check=(0,) if BOUNDS_CHECKS_N else ()
-        )
+        # K_scale_shift is (1, N): advance dim 0 by group_id
+        # V_scale_shift is (N, 1): advance dim 1 by group_id
+        if BOUNDS_CHECKS_N:
+            k_scale_shift = tl.load(K_scale_shift_ptrs + group_id * stride_k_scale_shift_row, mask=kv_mask_n[None, :], other=0.0)
+            v_scale_shift = tl.load(V_scale_shift_ptrs + group_id * stride_v_scale_shift_col, mask=kv_mask_n[:, None], other=0.0)
+        else:
+            k_scale_shift = tl.load(K_scale_shift_ptrs + group_id * stride_k_scale_shift_row)
+            v_scale_shift = tl.load(V_scale_shift_ptrs + group_id * stride_v_scale_shift_col)
         if IS_HIP:
             k_scale, k_shift = cast_uint32_to_float(k_scale_shift)
             v_scale, v_shift = cast_uint32_to_float(v_scale_shift)
