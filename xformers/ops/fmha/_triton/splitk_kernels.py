@@ -217,7 +217,7 @@ def _fwd_kernel_splitK(
     chunk_hi = (splitk_idx + 1) * BLOCK_N_PER_SPLIT
     chunk_lo = splitk_idx * BLOCK_N_PER_SPLIT
     ignore_in_first_block = 0
-    # For paged attention case K/V_block_ptr are defined inside the loop
+    # For paged attention case K/V pointers are defined inside the loop
     # whereas for non-paged case they are defined before the loop.
     if PAGE_SIZE > 0:
         # Page contains several blocks
@@ -246,43 +246,23 @@ def _fwd_kernel_splitK(
             v_base += off_z * stride_vz
         # Additional shift by 1 along the last dimension in the quantized case, since
         # the first element along that dim contains packed quantization coefficients.
-        K_block_ptr = tl.make_block_ptr(
-            base=k_base + stride_kk * INT4_QUANTIZED * N_GROUPS,
-            shape=(PACKED_D_PER_GROUP, hi),
-            strides=(stride_kk, stride_kn),
-            offsets=(0, lo),
-            block_shape=(PACKED_D_PER_GROUP, BLOCK_N),
-            order=(0, 1),
-        )
-        V_block_ptr = tl.make_block_ptr(
-            base=v_base + stride_vk * INT4_QUANTIZED * N_GROUPS,
-            shape=(hi, PACKED_D_PER_GROUP),
-            strides=(stride_vn, stride_vk),
-            offsets=(lo, 0),
-            block_shape=(BLOCK_N, PACKED_D_PER_GROUP),
-            order=(1, 0),
-        )
+        k_base_kv = k_base + stride_kk * INT4_QUANTIZED * N_GROUPS
+        v_base_kv = v_base + stride_vk * INT4_QUANTIZED * N_GROUPS
+        # K is transposed: (PACKED_D_PER_GROUP, BLOCK_N), strides (stride_kk, stride_kn)
+        offs_d_k = tl.arange(0, PACKED_D_PER_GROUP)
+        offs_n_k = tl.arange(0, BLOCK_N)
+        K_ptrs = k_base_kv + offs_d_k[:, None] * stride_kk + (lo + offs_n_k[None, :]) * stride_kn
+        # V: (BLOCK_N, PACKED_D_PER_GROUP), strides (stride_vn, stride_vk)
+        offs_n_v = tl.arange(0, BLOCK_N)
+        offs_d_v = tl.arange(0, PACKED_D_PER_GROUP)
+        V_ptrs = v_base_kv + (lo + offs_n_v[:, None]) * stride_vn + offs_d_v[None, :] * stride_vk
 
         if INT4_QUANTIZED:
-            # Pointers to quantization coefficients. Even those they are 1D,
-            # we use block pointers here so the pointer arithmetic is in int64,
-            # as otherwise the offsets for V_scale_shift_block_ptr may overflow.
-            K_scale_shift_block_ptr = tl.make_block_ptr(
-                base=k_base,
-                shape=(1, hi),
-                strides=(stride_kk, stride_kn),
-                offsets=(0, lo),
-                block_shape=(1, BLOCK_N),
-                order=(0, 1),
-            )
-            V_scale_shift_block_ptr = tl.make_block_ptr(
-                base=v_base,
-                shape=(hi, 1),
-                strides=(stride_vn, stride_vk),
-                offsets=(lo, 0),
-                block_shape=(BLOCK_N, 1),
-                order=(1, 0),
-            )
+            # Pointers to quantization coefficients
+            # K_scale_shift: (1, BLOCK_N), strides (stride_kk, stride_kn)
+            K_scale_shift_ptrs = k_base + (lo + offs_n_k[None, :]) * stride_kn
+            # V_scale_shift: (BLOCK_N, 1), strides (stride_vn, stride_vk)
+            V_scale_shift_ptrs = v_base + (lo + offs_n_v[:, None]) * stride_vn
         elif FP8_QUANTIZED:
             if Seq_starts_k is not None:
                 k_fp8_scale_shift_base += start_kv_idx * stride_k_fp8_scale_shift_n
@@ -290,54 +270,38 @@ def _fwd_kernel_splitK(
             else:
                 k_fp8_scale_shift_base += off_z * stride_k_fp8_scale_shift_z
                 v_fp8_scale_shift_base += off_z * stride_v_fp8_scale_shift_z
-            K_scale_shift_block_ptr = tl.make_block_ptr(
-                base=k_fp8_scale_shift_base,
-                shape=(1, hi),
-                strides=(1, stride_k_fp8_scale_shift_n),
-                offsets=(0, lo),
-                block_shape=(1, BLOCK_N),
-                order=(0, 1),
-            )
-            V_scale_shift_block_ptr = tl.make_block_ptr(
-                base=v_fp8_scale_shift_base,
-                shape=(hi, 1),
-                strides=(stride_v_fp8_scale_shift_n, 1),
-                offsets=(lo, 0),
-                block_shape=(BLOCK_N, 1),
-                order=(1, 0),
-            )
+            K_scale_shift_ptrs = k_fp8_scale_shift_base + (lo + offs_n_k[None, :]) * stride_k_fp8_scale_shift_n
+            V_scale_shift_ptrs = v_fp8_scale_shift_base + (lo + offs_n_v[:, None]) * stride_v_fp8_scale_shift_n
         else:
-            K_scale_shift_block_ptr = None
-            V_scale_shift_block_ptr = None
+            K_scale_shift_ptrs = None
+            V_scale_shift_ptrs = None
 
         if HAS_ADDITIVE_BIAS:
-            additive_bias_block_ptr = tl.make_block_ptr(
-                base=additive_bias
+            bias_base = (
+                additive_bias
                 + off_z * stride_bias_b
                 + off_g * stride_bias_g
-                + off_h * stride_bias_h,
-                shape=(N_CTX_Q, hi),
-                strides=(stride_bias_qm, stride_bias_km),
-                offsets=(start_m * BLOCK_M, lo),
-                block_shape=(BLOCK_M, BLOCK_N),
-                order=(0, 1),
+                + off_h * stride_bias_h
             )
+            offs_m_bias = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+            offs_n_bias = lo + tl.arange(0, BLOCK_N)
+            additive_bias_ptrs = bias_base + offs_m_bias[:, None] * stride_bias_qm + offs_n_bias[None, :] * stride_bias_km
+            bias_mask_m = offs_m_bias[:, None] < N_CTX_Q
 
     if SPLIT_K_EARLY_EXIT and lo >= hi:
         return
 
-    Q_block_ptr = tl.make_block_ptr(
-        base=Q
+    q_base = (
+        Q
         + off_m * stride_qm
         + off_h * stride_qh
         + off_z * stride_qz * queries_use_batch_dim
-        + off_g * stride_qg,
-        shape=(q_len, BLOCK_DMODEL),
-        strides=(stride_qm, stride_qk),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, D_PER_GROUP),
-        order=(1, 0),
+        + off_g * stride_qg
     )
+    offs_m_q = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d_q = tl.arange(0, D_PER_GROUP)
+    Q_ptrs = q_base + offs_m_q[:, None] * stride_qm + offs_d_q[None, :] * stride_qk
+    q_mask = offs_m_q[:, None] < q_len
 
     # initialize pointer to m and l
     m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
@@ -364,7 +328,7 @@ def _fwd_kernel_splitK(
     q: "VAR_ARGS_ARRAY"  # noqa: F821
     for i in range(len(acc)):  # noqa: F821
         q[i] = tl.load(  # noqa: F821
-            tl.advance(Q_block_ptr, (0, i * D_PER_GROUP)), boundary_check=(0,)
+            Q_ptrs + i * D_PER_GROUP * stride_qk, mask=q_mask, other=0.0
         )
 
     if IS_CAUSAL or IS_LOCAL:
@@ -396,72 +360,41 @@ def _fwd_kernel_splitK(
             offset = physical_page_idx * PAGE_SIZE + block_offset_in_page * BLOCK_N
 
             current_block_size = min(hi - start_n, BLOCK_N)
-            K_block_ptr = tl.make_block_ptr(
-                base=k_base + stride_kk * INT4_QUANTIZED * N_GROUPS,
-                shape=(PACKED_D_PER_GROUP, offset + current_block_size),
-                strides=(stride_kk, stride_kn),
-                offsets=(0, offset),
-                block_shape=(PACKED_D_PER_GROUP, BLOCK_N),
-                order=(0, 1),
-            )
-            V_block_ptr = tl.make_block_ptr(
-                base=v_base + stride_vk * INT4_QUANTIZED * N_GROUPS,
-                shape=(offset + current_block_size, PACKED_D_PER_GROUP),
-                strides=(stride_vn, stride_vk),
-                offsets=(offset, 0),
-                block_shape=(BLOCK_N, PACKED_D_PER_GROUP),
-                order=(1, 0),
-            )
+            # K is transposed: (PACKED_D_PER_GROUP, BLOCK_N)
+            offs_d_k = tl.arange(0, PACKED_D_PER_GROUP)
+            offs_n_k = tl.arange(0, BLOCK_N)
+            K_ptrs = (k_base + stride_kk * INT4_QUANTIZED * N_GROUPS
+                      + offs_d_k[:, None] * stride_kk + (offset + offs_n_k[None, :]) * stride_kn)
+            # V: (BLOCK_N, PACKED_D_PER_GROUP)
+            offs_n_v = tl.arange(0, BLOCK_N)
+            offs_d_v = tl.arange(0, PACKED_D_PER_GROUP)
+            V_ptrs = (v_base + stride_vk * INT4_QUANTIZED * N_GROUPS
+                      + (offset + offs_n_v[:, None]) * stride_vn + offs_d_v[None, :] * stride_vk)
             if INT4_QUANTIZED:
-                # Pointers to quantization coefficients. Even those they are 1D,
-                # we use block pointers here so the pointer arithmetic is in int64,
-                # as otherwise the offsets for V_scale_shift_block_ptr may overflow.
-                K_scale_shift_block_ptr = tl.make_block_ptr(
-                    base=k_base,
-                    shape=(1, offset + current_block_size),
-                    strides=(stride_kk, stride_kn),
-                    offsets=(0, offset),
-                    block_shape=(1, BLOCK_N),
-                    order=(0, 1),
-                )
-                V_scale_shift_block_ptr = tl.make_block_ptr(
-                    base=v_base,
-                    shape=(offset + current_block_size, 1),
-                    strides=(stride_vn, stride_vk),
-                    offsets=(offset, 0),
-                    block_shape=(BLOCK_N, 1),
-                    order=(1, 0),
-                )
+                K_scale_shift_ptrs = k_base + (offset + offs_n_k[None, :]) * stride_kn
+                V_scale_shift_ptrs = v_base + (offset + offs_n_v[:, None]) * stride_vn
             elif FP8_QUANTIZED:
-                K_scale_shift_block_ptr = tl.make_block_ptr(
-                    base=k_fp8_scale_shift_base,
-                    shape=(1, offset + current_block_size),
-                    strides=(1, stride_k_fp8_scale_shift_n),
-                    offsets=(0, offset),
-                    block_shape=(1, BLOCK_N),
-                    order=(0, 1),
-                )
-                V_scale_shift_block_ptr = tl.make_block_ptr(
-                    base=v_fp8_scale_shift_base,
-                    shape=(offset + current_block_size, 1),
-                    strides=(stride_v_fp8_scale_shift_n, 1),
-                    offsets=(offset, 0),
-                    block_shape=(BLOCK_N, 1),
-                    order=(1, 0),
-                )
+                K_scale_shift_ptrs = k_fp8_scale_shift_base + (offset + offs_n_k[None, :]) * stride_k_fp8_scale_shift_n
+                V_scale_shift_ptrs = v_fp8_scale_shift_base + (offset + offs_n_v[:, None]) * stride_v_fp8_scale_shift_n
             else:
-                K_scale_shift_block_ptr = None
-                V_scale_shift_block_ptr = None
+                K_scale_shift_ptrs = None
+                V_scale_shift_ptrs = None
             logical_block_idx += 1
+
+        # Compute boundary mask for this block
+        if BOUNDS_CHECKS_N:
+            kv_mask_n = tl.arange(0, BLOCK_N) < (hi - start_n)
+        else:
+            kv_mask_n = None
 
         k: "VAR_ARGS_ARRAY"  # noqa: F821
         v: "VAR_ARGS_ARRAY"  # noqa: F821
         for i in range(len(acc)):  # noqa: F821
             k[i], v[i] = load_dequantize_k_v_group(  # noqa: F821
-                K_block_ptr,
-                V_block_ptr,
-                K_scale_shift_block_ptr,
-                V_scale_shift_block_ptr,
+                K_ptrs,
+                V_ptrs,
+                K_scale_shift_ptrs,
+                V_scale_shift_ptrs,
                 BOUNDS_CHECKS_N,
                 PACKED_PER_VAL,
                 PACKED_D_PER_GROUP,
@@ -469,6 +402,11 @@ def _fwd_kernel_splitK(
                 Q.dtype.element_ty,
                 i,
                 IS_HIP,
+                kv_mask_n,
+                stride_kk,
+                stride_vk,
+                stride_kk if INT4_QUANTIZED else 1,
+                stride_vk if INT4_QUANTIZED else 1,
             )
 
         # -- compute qk ---
@@ -483,12 +421,17 @@ def _fwd_kernel_splitK(
             )
 
         if HAS_ADDITIVE_BIAS:
+            if BOUNDS_CHECKS_N:
+                bias_mask = bias_mask_m & (tl.arange(0, BLOCK_N)[None, :] < (hi - start_n))
+            else:
+                bias_mask = bias_mask_m
             loaded_bias = tl.load(
-                additive_bias_block_ptr,
-                boundary_check=(0, 1) if BOUNDS_CHECKS_N else (0,),
+                additive_bias_ptrs,
+                mask=bias_mask,
+                other=0.0,
             )
             qk += loaded_bias.to(tl.float32) * log2e
-            additive_bias_block_ptr = tl.advance(additive_bias_block_ptr, (0, BLOCK_N))
+            additive_bias_ptrs = additive_bias_ptrs + BLOCK_N * stride_bias_km
 
         # TODO: This is slow, and only needed at the last iteration.
         # Maybe we can unroll the last iteration instead?
@@ -533,38 +476,37 @@ def _fwd_kernel_splitK(
 
         if not PAGE_SIZE:
             # update pointers
-            K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
-            V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
+            K_ptrs = K_ptrs + BLOCK_N * stride_kn
+            V_ptrs = V_ptrs + BLOCK_N * stride_vn
             if PACKED_PER_VAL > 1:
-                K_scale_shift_block_ptr = tl.advance(
-                    K_scale_shift_block_ptr, (0, BLOCK_N)
-                )
-                V_scale_shift_block_ptr = tl.advance(
-                    V_scale_shift_block_ptr, (BLOCK_N, 0)
-                )
+                if INT4_QUANTIZED:
+                    K_scale_shift_ptrs = K_scale_shift_ptrs + BLOCK_N * stride_kn
+                    V_scale_shift_ptrs = V_scale_shift_ptrs + BLOCK_N * stride_vn
+                elif FP8_QUANTIZED:
+                    K_scale_shift_ptrs = K_scale_shift_ptrs + BLOCK_N * stride_k_fp8_scale_shift_n
+                    V_scale_shift_ptrs = V_scale_shift_ptrs + BLOCK_N * stride_v_fp8_scale_shift_n
 
     # write back O
-    O_block_ptr = tl.make_block_ptr(
-        base=Out_splitK
+    o_base = (
+        Out_splitK
         + off_z.to(tl.int64) * stride_osk_z * queries_use_batch_dim
         + off_m * stride_osk_m
         + off_g * stride_osk_g
         + off_h * stride_osk_h
-        + splitk_idx * stride_osk_s,
-        shape=(q_len, D_PER_GROUP),
-        strides=(stride_osk_m, 1),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, D_PER_GROUP),
-        order=(1, 0),
+        + splitk_idx * stride_osk_s
     )
+    offs_m_o = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d_o = tl.arange(0, D_PER_GROUP)
+    O_ptrs = o_base + offs_m_o[:, None] * stride_osk_m + offs_d_o[None, :]
+    o_mask = offs_m_o[:, None] < q_len
     for i in range(len(acc)):  # noqa: F821
         # If for the current batch element there are no tokens in the current split-k chunk (because
         # seqlen is too short), l_i will be 0, so we need to make sure attention is filled with zeros and not NaNs.
         attn_out = tl.where(l_i[:, None] == 0, 0.0, acc[i] / l_i[:, None])  # noqa: F821
         tl.store(
-            tl.advance(O_block_ptr, (0, i * D_PER_GROUP)),
+            O_ptrs + i * D_PER_GROUP,
             attn_out.to(Out_splitK.dtype.element_ty),  # noqa: F821
-            boundary_check=(0,),
+            mask=o_mask,
         )
     if WRITE_LSE:
         LSE_splitk_ptr = (
@@ -717,9 +659,9 @@ def load_dequantize_k_v_group(
     """Load K/V for a given block. In case of int4/fp8-quantized K/V, dequantize them after loading.
     If quantization is group-wise, use group_id to advance the pointers to the current group.
     """
-    # Advance to the current quantization group via pointer arithmetic
-    # K is (D, N) with D-stride = stride_kk
-    # V is (N, D) with D-stride = stride_vk
+    # Advance to the current quantization group
+    # K is (D, N) with D-stride = stride_kk → advance D dim by PACKED_D_PER_GROUP * group_id
+    # V is (N, D) with D-stride = stride_vk → advance D dim by PACKED_D_PER_GROUP * group_id
     K_ptrs_g = K_ptrs + PACKED_D_PER_GROUP * group_id * stride_kk
     V_ptrs_g = V_ptrs + PACKED_D_PER_GROUP * group_id * stride_vk
 
@@ -738,8 +680,6 @@ def load_dequantize_k_v_group(
         else:
             v_scale_shift = tl.load(V_scale_shift_ptrs)
         if IS_HIP:
-            # MI300 doesn't have builtin casting instructions for fp8 -> bf16,
-            # so casting to f32 is actually more performant on this workload.
             v_scale, v_shift = cast_uint32_to_float(v_scale_shift)
         else:
             v_scale, v_shift = cast_uint32_to_half2(v_scale_shift)
@@ -764,8 +704,9 @@ def load_dequantize_k_v_group(
             k = tl.trans(k_t)
     elif PACKED_PER_VAL > 1:
         # Int4 quantization.
-        # K_scale_shift is (1, N): advance dim 0 by group_id
-        # V_scale_shift is (N, 1): advance dim 1 by group_id
+        # Advance scale/shift pointers by group_id
+        # K_scale_shift is (1, N): advance dim 0 by group_id → add group_id * stride_k_scale_shift_row
+        # V_scale_shift is (N, 1): advance dim 1 by group_id → add group_id * stride_v_scale_shift_col
         if BOUNDS_CHECKS_N:
             k_scale_shift = tl.load(K_scale_shift_ptrs + group_id * stride_k_scale_shift_row, mask=kv_mask_n[None, :], other=0.0)
             v_scale_shift = tl.load(V_scale_shift_ptrs + group_id * stride_v_scale_shift_col, mask=kv_mask_n[:, None], other=0.0)
